@@ -54,7 +54,18 @@ class SpaceWeatherPlotter:
         
         for i, param in enumerate(valid_params):
             ax = axes[i]
-            ax.plot(df['Time'], df[param], linewidth=1.5, color='#1f77b4')
+            
+            # Filter out NA values for plotting
+            mask = df[param].notna() & df['Time'].notna()
+            time_data = df.loc[mask, 'Time']
+            param_data = df.loc[mask, param]
+            
+            # Convert to numeric to ensure compatibility
+            param_data = pd.to_numeric(param_data, errors='coerce')
+            
+            # Plot only valid data
+            if len(time_data) > 0 and len(param_data.dropna()) > 0:
+                ax.plot(time_data, param_data, linewidth=1.5, color='#1f77b4')
             
             unit = self.units.get(param, '')
             title = f"{param} ({unit})" if unit else param
@@ -64,23 +75,28 @@ class SpaceWeatherPlotter:
             if param in ['Bz', 'By', 'Bx', 'SYM-H', 'DST']:
                 ax.axhline(y=0, color='red', linestyle='--', linewidth=0.8, alpha=0.5)
             
-            y_data = df[param].dropna()
-            if len(y_data) > 0:
-                y_min, y_max = y_data.min(), y_data.max()
+            # Set y-axis limits based on valid data
+            y_valid = param_data.dropna()
+            if len(y_valid) > 0:
+                y_min, y_max = y_valid.min(), y_valid.max()
                 y_range = y_max - y_min
                 if y_range > 0:
                     ax.set_ylim(y_min - 0.1*y_range, y_max + 0.1*y_range)
         
         axes[-1].set_xlabel('Time (UTC)', fontsize=11, fontweight='bold')
         
-        for ax in axes:
-            ax.set_xlim(df['Time'].min(), df['Time'].max())
-        
-        self._format_time_axis(axes[-1], df['Time'])
-        
-        time_range = f"{df['Time'].min().strftime('%Y-%m-%d')} to {df['Time'].max().strftime('%Y-%m-%d')}"
-        fig.suptitle(f'Space Weather Data\n{time_range}', 
-                     fontsize=14, fontweight='bold', y=0.995)
+        # Set x-axis limits using valid time data
+        valid_times = df['Time'].dropna()
+        if len(valid_times) > 0:
+            for ax in axes:
+                ax.set_xlim(valid_times.min(), valid_times.max())
+            
+            self._format_time_axis(axes[-1], valid_times)
+            
+            # Generate title with valid time range
+            time_range = f"{valid_times.min().strftime('%Y-%m-%d')} to {valid_times.max().strftime('%Y-%m-%d')}"
+            fig.suptitle(f'Space Weather Data\n{time_range}', 
+                         fontsize=14, fontweight='bold', y=0.995)
         
         plt.tight_layout(rect=[0, 0, 1, 0.99])
         

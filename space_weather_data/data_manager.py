@@ -29,11 +29,10 @@ class DataManager:
         filepath = self.data_dir / filename
         
         if filepath.exists() and not overwrite:
-            print(f"\nFile exists: {filepath}")
-            response = input("Overwrite? (y/n): ").strip().lower()
-            if response != 'y':
-                print("Save cancelled")
-                return None
+            print(f"\n[INFO] File exists and overwrite is False: {filepath}")
+            # The interactive input is removed to support non-interactive workflows.
+            # The main script now handles this logic.
+            return None # Indicate that save was skipped
         
         try:
             df.to_csv(filepath, index=False, encoding='utf-8-sig')
@@ -90,7 +89,7 @@ class DataManager:
         filename = f"space_weather_{source}_{resolution}_{time_label}.csv"
         return filename
     
-    def check_data_exists(self, filename: str) -> bool:
+    def file_exists(self, filename: str) -> bool:
         """Check if data file exists"""
         if not filename.endswith('.csv'):
             filename = f"{filename}.csv"

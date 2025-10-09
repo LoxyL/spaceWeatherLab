@@ -57,29 +57,46 @@ class SpaceWeatherDataTool:
         print(f"Parameters: {', '.join(valid_params)}")
         print(f"Source: {DATA_SOURCES[source]['name']}")
         
-        try:
-            fetcher = OMNIWebFetcher(resolution=resolution)
-            df = fetcher.fetch(start_dt, end_dt, valid_params)
-            
-            if df is None or df.empty:
-                print("\nError: No data retrieved")
-                return False
-            
-            print(f"\nData preview:")
-            print(df.head())
-            
-        except Exception as e:
-            print(f"\nError: {e}")
-            return False
-        
+        # Determine output filename
         if output_filename is None:
             output_filename = self.data_manager.get_filename(start_dt, end_dt, source, resolution)
         
-        result = self.data_manager.save_to_csv(df, output_filename, overwrite=overwrite)
+        # Check if file exists and handle accordingly
+        df = None
+        if not overwrite and self.data_manager.file_exists(output_filename):
+            print(f"\n[INFO] Data file already exists: {output_filename}")
+            if plot:
+                print("[INFO] Loading data from existing file for plotting...")
+                df = self.data_manager.load_from_csv(output_filename)
+                if df is None:
+                    print("[ERROR] Failed to load data. Please fetch it again without --plot.")
+                    return False
+            else:
+                print("[INFO] Use --overwrite to re-download or --plot to generate a plot.")
+                return True # Successful, no action needed
         
-        if not result:
-            print(f"\n[ERROR] Save failed")
-            return False
+        # Fetch data if not loaded from existing file
+        if df is None:
+            try:
+                fetcher = OMNIWebFetcher(resolution=resolution)
+                df = fetcher.fetch(start_dt, end_dt, valid_params)
+                
+                if df is None or df.empty:
+                    print("\nError: No data retrieved")
+                    return False
+                
+                print(f"\nData preview:")
+                print(df.head())
+                
+                # Save the new data
+                result = self.data_manager.save_to_csv(df, output_filename, overwrite=overwrite)
+                if not result:
+                    # save_to_csv prints its own error
+                    return False
+
+            except Exception as e:
+                print(f"\nError: {e}")
+                return False
         
         if plot:
             try:

@@ -28,6 +28,9 @@ python main.py 2023
 # Specify parameters
 python main.py 2023-06 -p Bz Vsw nsw AE SYM-H
 
+# Download data for a specific time resolution
+python main.py 2023-06-15 -r 5min
+
 # Plot data
 python main.py 2023-06-15 --plot
 

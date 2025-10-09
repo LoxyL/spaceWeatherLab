@@ -2,8 +2,17 @@
 
 import requests
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
 from typing import List
+import tempfile
+import os
+
+try:
+    import cdflib
+    CDF_AVAILABLE = True
+except ImportError:
+    CDF_AVAILABLE = False
 
 
 class OMNIWebFetcher:
@@ -26,8 +35,14 @@ class OMNIWebFetcher:
         
         if self.resolution == "hourly":
             return self._fetch_hourly_data(start_dt, end_dt, parameters)
+        elif self.resolution in ["5min", "1min"]:
+            if not CDF_AVAILABLE:
+                print(f"Warning: cdflib not installed. Please run: pip install cdflib")
+                print(f"Falling back to hourly resolution")
+                return self._fetch_hourly_data(start_dt, end_dt, parameters)
+            return self._fetch_high_res_data(start_dt, end_dt, parameters)
         else:
-            print(f"Warning: {self.resolution} resolution requires CDF processing, using hourly instead")
+            print(f"Warning: Unknown resolution '{self.resolution}', using hourly instead")
             return self._fetch_hourly_data(start_dt, end_dt, parameters)
     
     def _fetch_hourly_data(self, start_dt: datetime, end_dt: datetime,
@@ -144,6 +159,168 @@ class OMNIWebFetcher:
             return value
         except (ValueError, IndexError):
             return pd.NA
+    
+    def _fetch_high_res_data(self, start_dt: datetime, end_dt: datetime,
+                             parameters: List[str]) -> pd.DataFrame:
+        """Fetch high resolution (5min or 1min) data from CDF files"""
+        all_data = []
+        
+        # Generate list of months to download
+        current_dt = datetime(start_dt.year, start_dt.month, 1)
+        end_month = datetime(end_dt.year, end_dt.month, 1)
+        
+        while current_dt <= end_month:
+            try:
+                month_data = self._download_cdf_month_data(current_dt.year, current_dt.month)
+                if month_data is not None and not month_data.empty:
+                    all_data.append(month_data)
+                    print(f"[OK] {current_dt.strftime('%Y-%m')} downloaded ({len(month_data)} records)")
+            except Exception as e:
+                print(f"[WARNING] {current_dt.strftime('%Y-%m')} failed: {e}")
+            
+            # Move to next month
+            if current_dt.month == 12:
+                current_dt = datetime(current_dt.year + 1, 1, 1)
+            else:
+                current_dt = datetime(current_dt.year, current_dt.month + 1, 1)
+        
+        if not all_data:
+            raise Exception("No data downloaded")
+        
+        df = pd.concat(all_data, ignore_index=True)
+        
+        # Filter by date range
+        df = df[(df['Time'] >= start_dt) & (df['Time'] <= end_dt + timedelta(days=1))]
+        
+        # Select requested columns
+        columns_to_keep = ['Time'] + [p for p in parameters if p in df.columns]
+        df = df[columns_to_keep]
+        
+        print(f"\n[OK] Retrieved {len(df)} records")
+        return df
+    
+    def _download_cdf_month_data(self, year: int, month: int) -> pd.DataFrame:
+        """Download CDF data for a specific month"""
+        url = self.data_urls[self.resolution].format(year=year, month=month)
+        print(f"Downloading: {url}")
+        
+        # Download CDF file to temporary location
+        response = requests.get(url, timeout=120)
+        if response.status_code != 200:
+            raise Exception(f"HTTP {response.status_code}")
+        
+        # Save to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.cdf') as tmp_file:
+            tmp_file.write(response.content)
+            tmp_path = tmp_file.name
+        
+        try:
+            # Parse CDF file
+            df = self._parse_cdf_file(tmp_path)
+            return df
+        finally:
+            # Clean up temporary file
+            try:
+                os.unlink(tmp_path)
+            except:
+                pass
+    
+    def _parse_cdf_file(self, cdf_path: str) -> pd.DataFrame:
+        """Parse OMNI CDF file
+        
+        CDF variable names mapping:
+        - Epoch: Time
+        - BX_GSE, BY_GSM, BZ_GSM: Magnetic field components
+        - Vx, Vy, Vz or flow_speed: Solar wind velocity
+        - proton_density: Proton density
+        - T: Temperature
+        - Pressure: Flow pressure
+        - E: Electric field
+        - AE_INDEX, SYM_H, etc.: Geomagnetic indices
+        """
+        cdf_file = cdflib.CDF(cdf_path)
+        
+        # Get all available variables
+        cdf_info = cdf_file.cdf_info()
+        variables = cdf_info.zVariables
+        
+        data_records = {}
+        
+        # Time variable (Epoch)
+        if 'Epoch' in variables:
+            epochs = cdf_file.varget('Epoch')
+            # Convert CDF epoch to datetime
+            times = cdflib.cdfepoch.to_datetime(epochs)
+            data_records['Time'] = times
+        else:
+            raise Exception("No Epoch variable found in CDF file")
+        
+        # CDF variable name mapping to standard names
+        cdf_mapping = {
+            # Magnetic field
+            'BX_GSE': 'Bx',
+            'BY_GSM': 'By', 
+            'BZ_GSM': 'Bz',
+            'B': 'B',
+            'ABS_B': 'B',
+            
+            # Solar wind
+            'flow_speed': 'Vsw',
+            'Vx': 'Vx',
+            'Vy': 'Vy', 
+            'Vz': 'Vz',
+            'proton_density': 'nsw',
+            'T': 'Tsw',
+            'Pressure': 'Psw',
+            'E': 'Esw',
+            
+            # Indices
+            'AE_INDEX': 'AE',
+            'AL_INDEX': 'AL',
+            'AU_INDEX': 'AU',
+            'SYM_H': 'SYM-H',
+            'SYM_D': 'SYM-D',
+            'ASY_H': 'ASYM-H',
+            'ASY_D': 'ASYM-D',
+            'PC_N_INDEX': 'PC',
+        }
+        
+        # Extract variables
+        for cdf_var, std_var in cdf_mapping.items():
+            if cdf_var in variables:
+                try:
+                    values = cdf_file.varget(cdf_var)
+                    # Handle fill values
+                    values = self._clean_cdf_values(values)
+                    data_records[std_var] = values
+                except Exception as e:
+                    print(f"Warning: Failed to read {cdf_var}: {e}")
+        
+        df = pd.DataFrame(data_records)
+        return df
+    
+    def _clean_cdf_values(self, values):
+        """Clean CDF values, replacing fill values with NA"""
+        # Convert to numpy array
+        values = np.array(values)
+        
+        # Common fill values in OMNI data
+        fill_values = [
+            -1.0e31, 9.9692099683868690e+36, 
+            999.99, 99999.0, 9999.99, 999.9, 99.99, 9.999
+        ]
+        
+        # Replace fill values with NA
+        for fill_val in fill_values:
+            if np.issubdtype(values.dtype, np.floating):
+                values = np.where(np.abs(values - fill_val) < abs(fill_val * 0.01) if fill_val != 0 else np.abs(values - fill_val) < 0.01, 
+                                np.nan, values)
+        
+        # Replace extremely large values
+        if np.issubdtype(values.dtype, np.floating):
+            values = np.where(np.abs(values) > 1e10, np.nan, values)
+        
+        return values
 
 
 if __name__ == "__main__":
