@@ -1,169 +1,238 @@
-# Space Weather Data Acquisition Tool
+# Space Weather Data Acquisition Tool v0.4.0
 
-Download solar wind and geomagnetic data from NASA OMNIweb.
+A versatile command-line and Python tool to fetch, manage, and plot space weather data from various sources like NASA OMNIweb, CDAWeb, and NOAA GOES.
+
+## Table of Contents
+
+- [Features](#features)
+- [Quick Start](#quick-start)
+- [Data Sources](#data-sources)
+  - [NASA OMNIweb (Default)](#nasa-omniweb-default)
+  - [NASA CDAWeb](#nasa-cdaweb)
+  - [NOAA GOES](#noaa-goes)
+- [Command Line Options](#command-line-options)
+- [Usage Examples](#usage-examples)
+- [Python API](#python-api)
+- [Data Format](#data-format)
+- [Notes](#notes)
+- [Project Structure](#project-structure)
+- [Requirements](#requirements)
+- [Links](#links)
 
 ## Features
 
-- **Real data from NASA** - Direct download from OMNI database (1963-present)
-- **Flexible time input** - Year, month, day, or date range
-- **Customizable parameters** - Select which data to download
-- **CSV export** - Easy to analyze with Excel/Python
-- **Built-in plotting** - Visualize data instantly
+-   Fetch data from multiple sources: NASA OMNIweb, CDAWeb, and NOAA GOES.
+-   Flexible time range input (day, month, year, or date range).
+-   Command-line interface for easy scripting and data retrieval.
+-   Saves data locally in clean, per-parameter CSV files.
+-   Automatic plotting of the fetched data.
+-   Python API for integration into other projects.
 
 ## Quick Start
 
-### Installation
-
 ```bash
-cd space_weather_data
-pip install -r requirements.txt
+# Get 5-minute OMNI data for a specific day and plot it
+python main.py 2023-06-15 -r 5min --plot
+
+# Get GOES-15 X-ray flux data
+python main.py 2013-03-17 -s goes --probe 15 --instrument xrs
+
+# Get ACE magnetic field data from CDAWeb
+python main.py 2004-11-07 -s cdaweb --dataset AC_H0_MFI -p BZ_GSE
 ```
 
-### Usage
+## Data Sources
 
-```bash
-# Download 2023 data (default parameters)
-python main.py 2023
+### NASA OMNIweb (Default)
 
-# Specify parameters
-python main.py 2023-06 -p Bz Vsw nsw AE SYM-H
+A compiled dataset providing a continuous, gap-filled solar wind record at 1 AU. It is created by combining and cross-calibrating data from multiple upstream satellites (like ACE, Wind, IMP 8). Ideal for general long-term analysis.
 
-# Download data for a specific time resolution
-python main.py 2023-06-15 -r 5min
+#### OMNI High-Resolution (1-min, 5-min)
 
-# Plot data
-python main.py 2023-06-15 --plot
+| | |
+|---|---|
+| **Time Range** | **1981 - Present** |
+| **Resolutions**| `1min`, `5min` |
+| **Sources** | `high_res_omni` (1981-2017, ASCII), `hro`/`hro2` (1995-Present, CDF). The tool automatically handles fallback. |
+| **Parameters** | `B`, `Bx`, `By`, `Bz`, `By_GSE`, `Bz_GSE`, `Vsw`, `nsw`, `Tsw`, `Psw`, `Esw`, `Vx`, `Vy`, `Vz`, `beta`, `Mach_num`, `AE`, `AL`, `AU`, `SYM-H`, `SYM-D`, `ASY-H`, `ASY-D`, `PC`, `Kp`, `DST` |
 
-# List local files
-python main.py --list
+#### OMNI Hourly Resolution
 
-# Show available parameters
-python main.py --show-params
-```
+| | |
+|---|---|
+| **Time Range** | **1963 - Present** |
+| **Resolution** | `hourly` |
+| **Source** | `low_res_omni` ASCII files |
+| **Parameters** | `B`, `Bx`, `By`, `Bz`, `Vsw`, `nsw`, `Tsw`, `Psw`, `Esw`, `AE`, `AL`, `AU`, `DST`, `PC` |
 
-## Supported Parameters
+### NASA CDAWeb
 
-### Magnetic Field (GSM)
-- **Bz, By, Bx** - IMF components (nT)
-- **B** - Field magnitude (nT)
+A vast archive of original, high-cadence data from numerous spacecraft missions. Ideal for specific event studies or accessing raw data not available in the compiled OMNI dataset.
 
-### Solar Wind
-- **Vsw** - Speed (km/s)
-- **nsw** - Proton density (N/cm³)
-- **Tsw** - Temperature (K)
+**You must find the Dataset ID and Variable Names on the CDAWeb site yourself.**
 
-### Pressure & Energy
-- **Psw** - Dynamic pressure (nPa)
-- **Esw** - Electric field (mV/m)
+#### How to find Datasets & Variables?
 
-### Geomagnetic Indices
-- **AE, AL, AU** - Auroral electrojet (nT)
-- **SYM-H** - Symmetric ring current (like Dst)
-- **ASYM-H** - Asymmetric ring current
-- **PC** - Polar cap index
+1.  Go to the [CDAWeb Data Browser](https://cdaweb.gsfc.nasa.gov/index.html/).
+2.  Select a mission (e.g., `Wind`) and instrument (e.g., `Magnetic Fields (space)`).
+3.  Find the **Dataset ID** (e.g., `WI_H0_MFI`) and the **Variable Names** inside it (e.g., `BGSE`).
 
-## Time Format
+#### Example CDAWeb Datasets
 
-- `2023` - Full year
-- `2023-06` - Full month
-- `2023-06-15` - Single day
-- `2020-2023` - Year range
+| Dataset ID         | Mission/Instrument | Example Variables          | Approx. Resolution | Approx. Time Range |
+| :----------------- | :----------------- | :------------------------- | :----------------- | :----------------- |
+| `WI_H0_MFI`        | Wind / MFI         | `BGSE` (vector)            | ~3 seconds         | 1994 - Present     |
+| `AC_H0_MFI`        | ACE / MFI          | `BGSE` (vector)            | 16 seconds         | 1997 - Present     |
+| `AC_H1_SWE`        | ACE / SWEPAM       | `Vp`, `Np`                 | 64 seconds         | 1997 - Present     |
+| `MMS1_FGM_SRVY_L2` | MMS / FGM          | `mms1_fgm_b_gse_srvy_l2`   | ~4.5 seconds       | 2015 - Present     |
+
+### NOAA GOES
+
+Provides access to Geostationary Operational Environmental Satellites data, crucial for space weather monitoring.
+
+| Instrument  | Description               | Example Variables (Probe 15) | Approx. Time Range (GOES 8-15) |
+| :---------- | :------------------------ | :--------------------------- | :----------------------------- |
+| `mag`       | Magnetic Field (1-min)    | `btotal`, `b_gse`    | ~1995 - ~2020                  |
+| `particles` | Energetic Particles (1/5-min) | `p1`, `p2`, `p3`, `e1`, `e2`, `e3`   | ~1995 - ~2020                  |
+| `xrs`       | Solar X-Ray Flux (1-min)  | `xrsa`, `xrsb`               | ~1995 - ~2020                  |
+
+- **Supported Probes**: GOES satellites `8` through `15`. The exact time range depends on the specific probe's operational window.
 
 ## Command Line Options
 
+| Option              | Short | Description                                                               |
+|---------------------|-------|---------------------------------------------------------------------------|
+| `time_input`        |       | Time range (YYYY-MM-DD, YYYY-MM, YYYY-MM-DD to YYYY-MM-DD)                 |
+| `--parameters`      | `-p`  | Parameters/variables to fetch (e.g., `BZ_GSE`, `Vsw`). Optional for GOES. |
+| `--source`          | `-s`  | Data source (`omniweb`, `cdaweb`, `goes`). Default: `omniweb`.             |
+| `--resolution`      | `-r`  | Time resolution (`hourly`, `5min`, `1min`). For OMNI.                      |
+| `--dataset`         |       | CDAWeb dataset ID (e.g., `WI_H0_MFI`). **Required for `cdaweb`**.           |
+| `--probe`           |       | GOES satellite probe number (e.g., `15`). **Required for `goes`**.          |
+| `--instrument`      |       | GOES instrument (`mag`, `particles`, `xrs`). **Required for `goes`**.     |
+| `--datatype`        |       | GOES data type (e.g., `1min`, `ep8`). Default: `1min`.                     |
+| `--output`          | `-o`  | Custom output filename.                                                   |
+| `--overwrite`       |       | Overwrite existing data files.                                            |
+| `--plot`            |       | Generate and display a plot of the data.                                  |
+| `--plot-file`       |       | Save the plot to a specified file.                                        |
+
+## Usage Examples
+
+### Fetching OMNI Data
+```bash
+# Download hourly OMNI data for a specific month
+python main.py 2023-06 -p Bz Vsw nsw
+
+# Download 5-minute resolution OMNI data and plot it
+python main.py 2023-06-15 -r 5min --plot
 ```
-python main.py <time> [options]
 
-Positional:
-  time                  Time input (e.g., 2023, 2023-06, 2023-06-15)
+### Fetching CDAWeb Data
+```bash
+# Get ACE magnetic field data for a specific day
+python main.py 2004-11-07 -s cdaweb --dataset AC_H0_MFI -p BZ_GSE
+```
 
-Options:
-  -p, --parameters      Parameters to download (default: Bz Vsw nsw Psw Esw AE SYM-H ASYM-H PC)
-  -r, --resolution      Time resolution: hourly (default), 5min, 1min
-  -o, --output          Output filename
-  --overwrite           Overwrite existing file
-  --plot                Show plot
-  --list                List local data files
-  --show-params         Show available parameters
+### Fetching GOES Data
+```bash
+# Get GOES-15 one-minute X-ray flux data for a specific day
+python main.py 2013-03-17 -s goes --probe 15 --instrument xrs
+
+# Get GOES-13 8-second magnetometer data and plot it
+python main.py 2012-07-12 -s goes --probe 13 --instrument mag --datatype ep8 --plot
 ```
 
 ## Python API
 
 ```python
-from time_parser import TimeParser
-from data_fetcher import OMNIWebFetcher
-from data_manager import DataManager
+from space_weather_data.time_parser import TimeParser
+from space_weather_data.data_fetcher import DataFetcher
+from space_weather_data.data_manager import DataManager
 
-# Parse time
+# --- OMNI Example ---
 parser = TimeParser()
-start_dt, end_dt = parser.parse("2023-06")
+start, end = parser.parse("2023-06")
+fetcher = DataFetcher(resolution="hourly")
+omni_df = fetcher.fetch_omni(start, end)
+# (omni_df will contain all parameters, you can filter it with pandas)
 
-# Fetch data
-fetcher = OMNIWebFetcher(resolution="hourly")
-df = fetcher.fetch(start_dt, end_dt, ["Bz", "Vsw", "AE"])
+# --- CDAWeb Example ---
+start_cda, end_cda = parser.parse("2010-01-01")
+cda_df = fetcher.fetch_cdaweb(
+    dataset="WI_H0_MFI", 
+    start_dt=start_cda, 
+    end_dt=end_cda, 
+    parameters=["BZ_GSE"] # Uses the parameter mapping
+)
 
-# Save data
+# --- GOES Example ---
+start_goes, end_goes = parser.parse("2013-03-17")
+goes_df = fetcher.fetch_goes(
+    probe='15',
+    start_dt=start_goes,
+    end_dt=end_goes,
+    instrument='xrs',
+    datatype='1min'
+)
+
+# --- Saving Data ---
 manager = DataManager()
-manager.save_to_csv(df, "my_data.csv")
+# (Example for saving one parameter from the OMNI dataframe)
+filename = manager.get_filename(
+    start, end, param="Bz", source="omniweb", resolution="hourly"
+)
+manager.save_to_csv(omni_df[['Time', 'Bz']], filename)
 ```
 
 ## Data Format
 
-CSV files with UTC timestamps:
+Data is saved as **one CSV file per parameter**.
 
-```
-Time,Bz,Vsw,nsw,AE
-2023-06-15 00:00:00,0.0,323.0,3.5,58.0
-2023-06-15 01:00:00,0.5,330.0,3.4,62.0
+**Filename Format**:
+- OMNI: `space_weather_omniweb_{resolution}_{time_label}_{parameter}.csv`
+- CDAWeb: `space_weather_cdaweb_{dataset}_{time_label}_{parameter}.csv`
+- GOES: `space_weather_goes_{probe}_{instrument}_{datatype}_{time_label}_{parameter}.csv`
+
+**Example Content (`..._Bz.csv`)**:
+```csv
+Time,Bz
+2023-06-15 00:00:00,0.0
 ...
 ```
 
-Filename: `space_weather_omniweb_hourly_YYYYMMDD.csv`
-
-## Data Source
-
-- **Source**: NASA OMNI database
-- **URL**: https://spdf.gsfc.nasa.gov/pub/data/omni/
-- **Resolution**: 1 hour (recommended)
-- **Coverage**: 1963 - present
-- **Time zone**: UTC
-- **Missing values**: NaN
-
 ## Notes
 
-- Data downloaded directly from NASA, no API key needed
-- Some time periods may have missing data
-- SYM-H uses DST index as substitute (similar physical meaning)
-- ASYM-H not available in basic OMNI2 dataset
+- All data is in UTC. Missing values are stored as NaN.
+- The `pyspedas` library caches downloaded data locally, usually in a folder named `pyspedas_data` in your home directory.
 
 ## Project Structure
 
 ```
 space_weather_data/
 ├── main.py              # CLI entry point
-├── data_fetcher.py      # NASA data downloader
+├── data_fetcher.py      # Unified data downloader
 ├── time_parser.py       # Time input parser
 ├── data_manager.py      # CSV file manager
 ├── plotter.py           # Data plotter
-├── config.py            # Parameter configuration
+├── config.py            # Configuration
 ├── requirements.txt     # Dependencies
-└── data/                # Downloaded data
+└── data/                # Saved CSV data
 ```
 
 ## Requirements
 
 - Python 3.7+
+- pyspedas
 - pandas
 - numpy
-- requests
 - matplotlib
 
 ## Links
 
 - [NASA OMNIweb](https://omniweb.gsfc.nasa.gov/)
-- [CDAWeb](https://cdaweb.gsfc.nasa.gov/)
+- [NASA CDAWeb](https://cdaweb.gsfc.nasa.gov/)
+- [NOAA GOES](https://www.goes.noaa.gov/)
 
 ---
 
-**Version**: 1.0.0  
+**Version**: 0.4.0  
 **License**: MIT

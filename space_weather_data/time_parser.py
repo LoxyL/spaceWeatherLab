@@ -76,7 +76,7 @@ class TimeParser:
             raise ValueError(f"Invalid date format: {time_input}, error: {e}")
         
         start_dt = dt.replace(hour=0, minute=0, second=0)
-        end_dt = dt.replace(hour=23, minute=59, second=59)
+        end_dt = start_dt + timedelta(days=1) - timedelta(seconds=1)
         
         return start_dt, end_dt
     

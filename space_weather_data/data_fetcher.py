@@ -1,335 +1,260 @@
-"""Data fetching module"""
+"""Data fetching module - refactored to use pyspedas library"""
 
-import requests
 import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List
-import tempfile
-import os
 
 try:
-    import cdflib
-    CDF_AVAILABLE = True
-except ImportError:
-    CDF_AVAILABLE = False
+    # Import the top-level pyspedas library
+    import pyspedas
+    from pytplot import get_data, del_data
+    # GOES netCDF files are now loaded using the core pytplot function
+    from pytplot import netcdf_to_tplot as goes_netcdf_to_tplot
+    PYSPEDAS_AVAILABLE = True
+except ImportError as e:
+    print(f"ImportError: {e}")
+    PYSPEDAS_AVAILABLE = False
 
+# Mapping from pyspedas tplot variable names to our project's standard names
+PYSPEDAS_COLUMN_MAPPING = {
+    'Epoch': 'Time', 'F': 'B', 'BX_GSE': 'Bx', 'BY_GSE': 'By_GSE', 'BZ_GSE': 'Bz_GSE',
+    'BY_GSM': 'By', 'BZ_GSM': 'Bz', 'flow_speed': 'Vsw', 'V': 'Vsw', 'Vx': 'Vx',
+    'Vy': 'Vy', 'Vz': 'Vz', 'proton_density': 'nsw', 'N': 'nsw', 'T': 'Tsw',
+    'Pressure': 'Psw', 'E': 'Esw', 'beta': 'beta', 'Mach_num': 'Mach_num', 'Kp': 'Kp',
+    'AE_INDEX': 'AE', 'AL_INDEX': 'AL', 'AU_INDEX': 'AU', 'SYM_H': 'SYM-H',
+    'SYM_D': 'SYM-D', 'ASY_H': 'ASYM-H', 'ASY_D': 'ASYM-D', 'PC_N_INDEX': 'PC', 'DST': 'DST'
+}
 
-class OMNIWebFetcher:
-    """OMNI web data fetcher"""
+# Translates user-friendly standard names to dataset-specific pyspedas variables and components
+CDAWEB_PARAM_MAPPING = {
+    'WI_H0_MFI': {
+        # user_param: (pyspedas_variable, component_index)
+        'BX_GSE': ('BGSE', 0),
+        'BY_GSE': ('BGSE', 1),
+        'BZ_GSE': ('BGSE', 2),
+    },
+    'AC_H0_MFI': {
+        'BX_GSE': ('BGSE', 0),
+        'BY_GSE': ('BGSE', 1),
+        'BZ_GSE': ('BGSE', 2),
+    }
+    # Future datasets can be added here
+}
+
+class DataFetcher:
+    """
+    Unified data fetcher for OMNI and specific CDAWeb datasets using the pyspedas library.
+    Follows the mission-specific pyspedas loading pattern.
+    """
     
     def __init__(self, resolution: str = "hourly"):
+        if not PYSPEDAS_AVAILABLE:
+            raise ImportError("pyspedas library not found or incomplete. Please run: pip install pyspedas")
         self.resolution = resolution
-        self.data_urls = {
-            "hourly": "https://spdf.gsfc.nasa.gov/pub/data/omni/low_res_omni/omni2_{year}.dat",
-            "5min": "https://spdf.gsfc.nasa.gov/pub/data/omni/omni_cdaweb/hro_5min/{year}/omni_hro_5min_{year}{month:02d}01_v01.cdf",
-            "1min": "https://spdf.gsfc.nasa.gov/pub/data/omni/omni_cdaweb/hro_1min/{year}/omni_hro_1min_{year}{month:02d}01_v01.cdf",
+        # Map user-friendly dataset IDs to the actual pyspedas functions
+        self.cdaweb_function_mapping = {
+            'WI_H0_MFI': pyspedas.wind.mfi,
+            'AC_H0_MFI': pyspedas.ace.mfi,      # Corrected from 'mag' to 'mfi'
+            'AC_H1_SWE': pyspedas.ace.swe,      # Corrected from 'swepam' to 'swe'
+            'MMS1_FGM_SRVY_L2': pyspedas.mms.fgm,
         }
-    
-    def fetch(self, start_dt: datetime, end_dt: datetime, 
-              parameters: List[str]) -> pd.DataFrame:
-        """Fetch data from NASA OMNI database"""
-        print(f"\nFetching data from NASA OMNI database...")
-        print(f"Time range: {start_dt.strftime('%Y-%m-%d')} to {end_dt.strftime('%Y-%m-%d')}")
-        print(f"Resolution: {self.resolution}")
-        
-        if self.resolution == "hourly":
-            return self._fetch_hourly_data(start_dt, end_dt, parameters)
-        elif self.resolution in ["5min", "1min"]:
-            if not CDF_AVAILABLE:
-                print(f"Warning: cdflib not installed. Please run: pip install cdflib")
-                print(f"Falling back to hourly resolution")
-                return self._fetch_hourly_data(start_dt, end_dt, parameters)
-            return self._fetch_high_res_data(start_dt, end_dt, parameters)
-        else:
-            print(f"Warning: Unknown resolution '{self.resolution}', using hourly instead")
-            return self._fetch_hourly_data(start_dt, end_dt, parameters)
-    
-    def _fetch_hourly_data(self, start_dt: datetime, end_dt: datetime,
-                           parameters: List[str]) -> pd.DataFrame:
-        """Fetch hourly resolution data"""
-        all_data = []
-        
-        for year in range(start_dt.year, end_dt.year + 1):
+        self.goes_function_mapping = {
+            'mag': pyspedas.goes.mag,
+            'particles': pyspedas.goes.eps,      # Corrected from 'particles' to 'eps'
+            'xrs': pyspedas.goes.xrs
+        }
+
+    def _build_goes_pyspedas_name(self, simple_name: str, probe: str, instrument: str) -> str:
+        """Constructs the full pyspedas variable name from a simple name."""
+        if instrument == 'xrs':
+            # Handle different naming conventions for GOES probes
             try:
-                year_data = self._download_year_data(year)
-                all_data.append(year_data)
-                print(f"[OK] Year {year} downloaded ({len(year_data)} records)")
-            except Exception as e:
-                print(f"[ERROR] Year {year} failed: {e}")
-        
-        if not all_data:
-            raise Exception("No data downloaded")
-        
-        df = pd.concat(all_data, ignore_index=True)
-        df = df[(df['Time'] >= start_dt) & (df['Time'] <= end_dt)]
-        
-        columns_to_keep = ['Time'] + [p for p in parameters if p in df.columns]
-        df = df[columns_to_keep]
-        
-        print(f"\n[OK] Retrieved {len(df)} records")
-        return df
-    
-    def _download_year_data(self, year: int) -> pd.DataFrame:
-        """Download data for a specific year"""
-        url = self.data_urls["hourly"].format(year=year)
-        print(f"Downloading: {url}")
-        
-        response = requests.get(url, timeout=60)
-        if response.status_code != 200:
-            raise Exception(f"HTTP {response.status_code}")
-        
-        return self._parse_omni2_hourly(response.text, year)
-    
-    def _parse_omni2_hourly(self, text: str, year: int) -> pd.DataFrame:
-        """
-        Parse OMNI2 hourly data format (space-separated ASCII)
-        
-        Column indices (0-based):
-        0: Year, 1: Day, 2: Hour
-        8: |B|, 12: Bx GSM, 15: By GSM, 16: Bz GSM
-        22: Proton Temp, 23: Proton Density, 24: Plasma Speed
-        28: Flow Pressure, 35: Electric Field
-        40: DST, 41: AE, 51: PC(N), 52: AL, 53: AU
-        """
-        lines = text.strip().split('\n')
-        data_records = []
-        
-        for line in lines:
-            if not line.strip():
-                continue
-            
-            try:
-                parts = line.split()
-                if len(parts) < 30:
-                    continue
-                
-                year_val = int(parts[0])
-                day_of_year = int(parts[1])
-                hour = int(parts[2])
-                dt = datetime(year_val, 1, 1) + timedelta(days=day_of_year-1, hours=hour)
-                
-                record = {
-                    'Time': dt,
-                    'B': self._parse_float(parts, 8),
-                    'Bx': self._parse_float(parts, 12),
-                    'By': self._parse_float(parts, 15),
-                    'Bz': self._parse_float(parts, 16),
-                    'Tsw': self._parse_float(parts, 22),
-                    'nsw': self._parse_float(parts, 23),
-                    'Vsw': self._parse_float(parts, 24),
-                    'Psw': self._parse_float(parts, 28),
-                    'Esw': self._parse_float(parts, 35),
-                    'DST': self._parse_float(parts, 40),
-                    'AE': self._parse_float(parts, 41),
-                    'PC': self._parse_float(parts, 51),
-                    'AL': self._parse_float(parts, 52),
-                    'AU': self._parse_float(parts, 53),
-                }
-                
-                record['SYM-H'] = record['DST']
-                record['ASYM-H'] = pd.NA
-                
-                data_records.append(record)
-                
-            except (ValueError, IndexError):
-                continue
-        
-        return pd.DataFrame(data_records)
-    
-    def _parse_float(self, parts: list, index: int) -> float:
-        """Parse float from split line, handling missing values"""
-        try:
-            if index >= len(parts):
-                return pd.NA
-            
-            value_str = parts[index].strip()
-            if not value_str:
-                return pd.NA
-            
-            value = float(value_str)
-            
-            if abs(value) >= 9999.0:
-                return pd.NA
-            if abs(value - 999.9) < 0.1 or abs(value - 99.9) < 0.1:
-                return pd.NA
-            if abs(value - 9.999) < 0.001 or abs(value - 99.99) < 0.01:
-                return pd.NA
-                
-            return value
-        except (ValueError, IndexError):
-            return pd.NA
-    
-    def _fetch_high_res_data(self, start_dt: datetime, end_dt: datetime,
-                             parameters: List[str]) -> pd.DataFrame:
-        """Fetch high resolution (5min or 1min) data from CDF files"""
-        all_data = []
-        
-        # Generate list of months to download
-        current_dt = datetime(start_dt.year, start_dt.month, 1)
-        end_month = datetime(end_dt.year, end_dt.month, 1)
-        
-        while current_dt <= end_month:
-            try:
-                month_data = self._download_cdf_month_data(current_dt.year, current_dt.month)
-                if month_data is not None and not month_data.empty:
-                    all_data.append(month_data)
-                    print(f"[OK] {current_dt.strftime('%Y-%m')} downloaded ({len(month_data)} records)")
-            except Exception as e:
-                print(f"[WARNING] {current_dt.strftime('%Y-%m')} failed: {e}")
-            
-            # Move to next month
-            if current_dt.month == 12:
-                current_dt = datetime(current_dt.year + 1, 1, 1)
+                probe_num = int(probe)
+            except (ValueError, TypeError):
+                probe_num = 0  # Default if probe is not a number
+
+            if probe_num > 15:
+                # GOES-R series (16+) use a _flux suffix.
+                return f"{simple_name}_flux"
             else:
-                current_dt = datetime(current_dt.year, current_dt.month + 1, 1)
+                # Older GOES satellites (<=15) use A_AVG, B_AVG for x-ray flux
+                if simple_name == 'xrsa':
+                    return 'A_AVG'
+                if simple_name == 'xrsb':
+                    return 'B_AVG'
+                # Fallback for other xrs params on old probes, though likely not present
+                return simple_name
         
-        if not all_data:
-            raise Exception("No data downloaded")
+        # particles uses an 'eps' prefix inside the variable name
+        if instrument == 'particles':
+            return f"g{probe}_eps_{simple_name}"
+            
+        # mag is the default case
+        return f"g{probe}_{simple_name}"
+
+    def _process_pyspedas_data(self, loaded_vars: List[str], standardize_omni: bool = False) -> pd.DataFrame:
+        """Helper function to convert tplot variables to a pandas DataFrame."""
+        if not loaded_vars:
+            print("[INFO] No data found for the specified criteria.")
+            return pd.DataFrame()
+
+        all_dfs = []
+        for var in loaded_vars:
+            var_data = get_data(var)
+            if var_data is None: continue
+            
+            df_var = pd.DataFrame(index=pd.to_datetime(var_data.times, unit='s'), data=var_data.y)
+            
+            if len(df_var.columns) > 1:
+                df_var.columns = [f"{var}_{i}" for i in range(len(df_var.columns))]
+            else:
+                df_var.columns = [var]
+            all_dfs.append(df_var)
+
+        if not all_dfs: return pd.DataFrame()
+
+        df = pd.concat(all_dfs, axis=1)
+        df = df.reset_index().rename(columns={'index': 'Time'})
         
-        df = pd.concat(all_data, ignore_index=True)
+        if standardize_omni:
+            df = df.rename(columns=PYSPEDAS_COLUMN_MAPPING)
         
-        # Filter by date range
-        df = df[(df['Time'] >= start_dt) & (df['Time'] <= end_dt + timedelta(days=1))]
-        
-        # Select requested columns
-        columns_to_keep = ['Time'] + [p for p in parameters if p in df.columns]
-        df = df[columns_to_keep]
-        
-        print(f"\n[OK] Retrieved {len(df)} records")
         return df
     
-    def _download_cdf_month_data(self, year: int, month: int) -> pd.DataFrame:
-        """Download CDF data for a specific month"""
-        url = self.data_urls[self.resolution].format(year=year, month=month)
-        print(f"Downloading: {url}")
-        
-        # Download CDF file to temporary location
-        response = requests.get(url, timeout=120)
-        if response.status_code != 200:
-            raise Exception(f"HTTP {response.status_code}")
-        
-        # Save to temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.cdf') as tmp_file:
-            tmp_file.write(response.content)
-            tmp_path = tmp_file.name
+    def fetch_omni(self, start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
+        """Fetch OMNI data."""
+        print(f"\nFetching OMNI data (via pyspedas)...")
+        print(f"Resolution: {self.resolution}")
+        del_data('*')
+        time_range = [start_dt.strftime('%Y-%m-%d %H:%M:%S'), end_dt.strftime('%Y-%m-%d %H:%M:%S')]
         
         try:
-            # Parse CDF file
-            df = self._parse_cdf_file(tmp_path)
+            loaded_vars = pyspedas.omni.data(trange=time_range, datatype=self.resolution)
+            df = self._process_pyspedas_data(loaded_vars, standardize_omni=True)
+            print(f"\n[OK] Retrieved {len(df)} OMNI records via pyspedas")
             return df
-        finally:
-            # Clean up temporary file
-            try:
-                os.unlink(tmp_path)
-            except:
-                pass
-    
-    def _parse_cdf_file(self, cdf_path: str) -> pd.DataFrame:
-        """Parse OMNI CDF file
-        
-        CDF variable names mapping:
-        - Epoch: Time
-        - BX_GSE, BY_GSM, BZ_GSM: Magnetic field components
-        - Vx, Vy, Vz or flow_speed: Solar wind velocity
-        - proton_density: Proton density
-        - T: Temperature
-        - Pressure: Flow pressure
-        - E: Electric field
-        - AE_INDEX, SYM_H, etc.: Geomagnetic indices
-        """
-        cdf_file = cdflib.CDF(cdf_path)
-        
-        # Get all available variables
-        cdf_info = cdf_file.cdf_info()
-        variables = cdf_info.zVariables
-        
-        data_records = {}
-        
-        # Time variable (Epoch)
-        if 'Epoch' in variables:
-            epochs = cdf_file.varget('Epoch')
-            # Convert CDF epoch to datetime
-            times = cdflib.cdfepoch.to_datetime(epochs)
-            data_records['Time'] = times
-        else:
-            raise Exception("No Epoch variable found in CDF file")
-        
-        # CDF variable name mapping to standard names
-        cdf_mapping = {
-            # Magnetic field
-            'BX_GSE': 'Bx',
-            'BY_GSM': 'By', 
-            'BZ_GSM': 'Bz',
-            'B': 'B',
-            'ABS_B': 'B',
-            
-            # Solar wind
-            'flow_speed': 'Vsw',
-            'Vx': 'Vx',
-            'Vy': 'Vy', 
-            'Vz': 'Vz',
-            'proton_density': 'nsw',
-            'T': 'Tsw',
-            'Pressure': 'Psw',
-            'E': 'Esw',
-            
-            # Indices
-            'AE_INDEX': 'AE',
-            'AL_INDEX': 'AL',
-            'AU_INDEX': 'AU',
-            'SYM_H': 'SYM-H',
-            'SYM_D': 'SYM-D',
-            'ASY_H': 'ASYM-H',
-            'ASY_D': 'ASYM-D',
-            'PC_N_INDEX': 'PC',
-        }
-        
-        # Extract variables
-        for cdf_var, std_var in cdf_mapping.items():
-            if cdf_var in variables:
-                try:
-                    values = cdf_file.varget(cdf_var)
-                    # Handle fill values
-                    values = self._clean_cdf_values(values)
-                    data_records[std_var] = values
-                except Exception as e:
-                    print(f"Warning: Failed to read {cdf_var}: {e}")
-        
-        df = pd.DataFrame(data_records)
-        return df
-    
-    def _clean_cdf_values(self, values):
-        """Clean CDF values, replacing fill values with NA"""
-        # Convert to numpy array
-        values = np.array(values)
-        
-        # Common fill values in OMNI data
-        fill_values = [
-            -1.0e31, 9.9692099683868690e+36, 
-            999.99, 99999.0, 9999.99, 999.9, 99.99, 9.999
-        ]
-        
-        # Replace fill values with NA
-        for fill_val in fill_values:
-            if np.issubdtype(values.dtype, np.floating):
-                values = np.where(np.abs(values - fill_val) < abs(fill_val * 0.01) if fill_val != 0 else np.abs(values - fill_val) < 0.01, 
-                                np.nan, values)
-        
-        # Replace extremely large values
-        if np.issubdtype(values.dtype, np.floating):
-            values = np.where(np.abs(values) > 1e10, np.nan, values)
-        
-        return values
+        except Exception as e:
+            print(f"Failed to download OMNI data using pyspedas: {e}")
+            return pd.DataFrame()
 
+    def fetch_cdaweb(self, dataset: str, start_dt: datetime, end_dt: datetime, parameters: List[str]) -> pd.DataFrame:
+        """Fetch a specific CDAWeb dataset, translating standard parameter names."""
+        print(f"\nFetching CDAWeb data (via pyspedas)...")
+        print(f"Dataset: {dataset}")
+        del_data('*')
+        
+        load_function = self.cdaweb_function_mapping.get(dataset)
+        if not load_function:
+            raise ValueError(f"Unsupported dataset '{dataset}'. Supported: {list(self.cdaweb_function_mapping.keys())}")
 
-if __name__ == "__main__":
-    from time_parser import TimeParser
-    
-    parser = TimeParser()
-    start, end = parser.parse("2023-06-15")
-    
-    fetcher = OMNIWebFetcher(resolution="hourly")
-    df = fetcher.fetch(start, end, ["Bz", "Vsw", "nsw"])
-    
-    print(df.head())
+        # --- Parameter Translation Logic ---
+        pyspedas_vars_to_load = set()
+        component_params = {} # Maps user_param -> (pyspedas_var, index)
+        dataset_map = CDAWEB_PARAM_MAPPING.get(dataset, {})
+
+        for p in parameters:
+            if p in dataset_map:
+                pyspedas_var, index = dataset_map[p]
+                pyspedas_vars_to_load.add(pyspedas_var)
+                component_params[p] = (pyspedas_var, index)
+            else:
+                # If param is not in our map, assume it's a direct variable name
+                pyspedas_vars_to_load.add(p)
+
+        if not pyspedas_vars_to_load:
+            print(f"[ERROR] Could not map requested parameters to any known variables for dataset '{dataset}'.")
+            return pd.DataFrame()
+        # --- End Translation Logic ---
+
+        time_range = [start_dt.strftime('%Y-%m-%d %H:%M:%S'), end_dt.strftime('%Y-%m-%d %H:%M:%S')]
+
+        try:
+            loaded_vars = load_function(trange=time_range, varnames=list(pyspedas_vars_to_load))
+            df_raw = self._process_pyspedas_data(loaded_vars)
+
+            if df_raw.empty:
+                print(f"\n[INFO] pyspedas loaded the dataset but found no data for the requested variables.")
+                return df_raw
+
+            # --- Post-processing: Build final DataFrame with user-requested names ---
+            final_df = pd.DataFrame()
+            final_df['Time'] = df_raw['Time']
+
+            for user_param, (pyspedas_var, index) in component_params.items():
+                pyspedas_col_name = f"{pyspedas_var}_{index}"
+                if pyspedas_col_name in df_raw.columns:
+                    final_df[user_param] = df_raw[pyspedas_col_name]
+            
+            # Include any parameters that were passed directly and not mapped
+            for p in parameters:
+                if p not in component_params and p in df_raw.columns:
+                    final_df[p] = df_raw[p]
+            # --- End Post-processing ---
+
+            print(f"\n[OK] Retrieved {len(final_df)} CDAWeb records via pyspedas")
+            return final_df
+        except Exception as e:
+            print(f"Failed to download CDAWeb data for dataset '{dataset}': {e}")
+            return pd.DataFrame()
+
+    def fetch_goes(self, probe: str, start_dt: datetime, end_dt: datetime, instrument: str, datatype: str, requested_params: List[str]) -> pd.DataFrame:
+        """Fetch GOES data, handling parameter name mapping internally."""
+        print(f"\nFetching GOES data (via pyspedas)...")
+        print(f"Probe: {probe}, Instrument: {instrument}, Datatype: {datatype}")
+        del_data('*')
+
+        load_function = self.goes_function_mapping.get(instrument)
+        if not load_function:
+            raise ValueError(f"Unsupported GOES instrument '{instrument}'. Supported: {list(self.goes_function_mapping.keys())}")
+
+        time_range = [start_dt.strftime('%Y-%m-%d %H:%M:%S'), end_dt.strftime('%Y-%m-%d %H:%M:%S')]
+
+        try:
+            # Step 1: Download the files only, don't attempt to load them with the buggy loader.
+            # This returns a list of local file paths.
+            files = load_function(
+                trange=time_range, probe=probe, datatype=datatype, 
+                downloadonly=True
+            )
+
+            if not files:
+                print("[INFO] No GOES data files found for the specified time range.")
+                return pd.DataFrame()
+
+            # Step 2: Manually load the downloaded files using the low-level netcdf_to_tplot,
+            # which allows us to correctly specify the variable names.
+            pyspedas_vars_to_load = [
+                self._build_goes_pyspedas_name(p, probe, instrument)
+                for p in requested_params
+            ]
+            
+            loaded_vars = goes_netcdf_to_tplot(files)
+            
+            df_raw = self._process_pyspedas_data(loaded_vars)
+
+            if df_raw.empty:
+                return df_raw
+            
+            # --- Filter and rename columns to match the simple names requested by the user ---
+            final_df = pd.DataFrame()
+            final_df['Time'] = df_raw['Time']
+            
+            for i, simple_param in enumerate(requested_params):
+                # Use the same full pyspedas name that we requested
+                pyspedas_name = pyspedas_vars_to_load[i]
+
+                if pyspedas_name in df_raw.columns:
+                    final_df[simple_param] = df_raw[pyspedas_name]
+                else:
+                    print(f"[INFO] Requested parameter '{simple_param}' (expected as '{pyspedas_name}') not found in GOES data.")
+
+            # Drop Time column if it's the only one left (meaning no params were found)
+            if len(final_df.columns) == 1 and 'Time' in final_df.columns:
+                return pd.DataFrame()
+
+            print(f"\n[OK] Retrieved {len(final_df)} GOES records via pyspedas")
+            return final_df
+
+        except Exception as e:
+            print(f"Failed to download GOES data: {e}")
+            return pd.DataFrame()

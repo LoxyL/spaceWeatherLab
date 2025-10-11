@@ -5,6 +5,7 @@ import pandas as pd
 from datetime import datetime
 from typing import Optional, List
 from pathlib import Path
+from time_parser import TimeParser
 
 
 class DataManager:
@@ -81,12 +82,35 @@ class DataManager:
         return [f.name for f in csv_files]
     
     def get_filename(self, start_dt: datetime, end_dt: datetime, 
-                     source: str = "omniweb", resolution: str = "hourly") -> str:
+                     param: str = None, **kwargs) -> str:
         """Generate standard filename"""
-        from time_parser import TimeParser
         
         time_label = TimeParser.get_time_range_label(start_dt, end_dt)
-        filename = f"space_weather_{source}_{resolution}_{time_label}.csv"
+        source = kwargs.get('source', 'omniweb')
+
+        # Build filename based on source
+        if source == 'cdaweb':
+            dataset = kwargs.get('dataset')
+            if not dataset:
+                raise ValueError("Dataset must be provided for cdaweb source")
+            base_name = f"space_weather_{source}_{dataset}_{time_label}"
+        elif source == 'goes':
+            probe = kwargs.get('probe')
+            instrument = kwargs.get('instrument')
+            datatype = kwargs.get('datatype', '1min')
+            if not all([probe, instrument]):
+                raise ValueError("Probe and instrument must be provided for goes source")
+            base_name = f"space_weather_{source}_{probe}_{instrument}_{datatype}_{time_label}"
+        else: # omniweb
+            resolution = kwargs.get('resolution', 'hourly')
+            base_name = f"space_weather_{source}_{resolution}_{time_label}"
+
+        # Add parameter to the filename if provided
+        if param:
+            filename = f"{base_name}_{param}.csv"
+        else:
+            filename = f"{base_name}.csv"
+            
         return filename
     
     def file_exists(self, filename: str) -> bool:

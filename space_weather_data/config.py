@@ -4,30 +4,28 @@ OMNIWEB_BASE_URL = "https://omniweb.gsfc.nasa.gov/cgi/nx1.cgi"
 
 # Parameter mapping: user-friendly name -> OMNI column index
 PARAMETER_MAPPING = {
-    # Magnetic field (GSM)
-    "Bz": "23",
-    "By": "22",
-    "Bx": "21",
-    "B": "20",
-    
-    # Solar wind
-    "Vsw": "24",
-    "nsw": "27",
-    "Tsw": "28",
-    
-    # Pressure & energy
-    "Psw": "29",
-    "Esw": "35",
-    
-    # Geomagnetic indices
-    "AE": "37",
-    "AL": "38",
-    "AU": "39",
-    "SYM-H": "40",
-    "SYM-D": "41",
-    "ASYM-H": "42",
-    "ASYM-D": "43",
-    "PC": "44",
+    # OMNIWEB Aliases
+    "B":      ["Bx", "By", "Bz"],
+    "V":      "Vsw",
+    "n":      "nsw",
+    "T":      "Tsw",
+    "p":      "Psw",
+    "E":      "Esw",
+    "beta":   "beta",
+    "mach":   "Mach_num",
+    "AE":     "AE",
+    "AL":     "AL",
+    "AU":     "AU",
+    "symh":   "SYM-H",
+    "symd":   "SYM-D",
+    "asyh":   "ASYM-H",
+    "asyd":   "ASYM-D",
+    "pc":     "PC",
+    "kp":     "Kp",
+    "dst":    "DST",
+
+    # GOES Vector aliases
+    "b_gse": ["b_gse_0", "b_gse_1", "b_gse_2"],
 }
 
 DEFAULT_PARAMETERS = ["Bz", "Vsw", "nsw", "Psw", "Esw", "AE", "SYM-H", "ASYM-H", "PC"]
@@ -39,6 +37,24 @@ DATA_SOURCES = {
         "description": "Solar wind and geomagnetic data from NASA",
         "resolution": ["1min", "5min", "hourly"],
     },
+    "cdaweb": {
+        "name": "NASA CDAWeb",
+        "url": "https://cdaweb.gsfc.nasa.gov/",
+        "description": "Access to a wide variety of space physics data",
+        "resolution": [], # Resolution is dataset-specific
+    },
+    "goes": {
+        "name": "NOAA GOES",
+        "url": "https://www.goes.noaa.gov/",
+        "description": "Geostationary Operational Environmental Satellites data",
+        "resolution": ["1min", "5min"], # Example resolutions
+    },
+}
+
+DEFAULT_GOES_PARAMETERS = {
+    'mag': ['btotal', 'b_gse'],
+    'xrs': ['xrsa', 'xrsb'],
+    'particles': ['p1', 'p2', 'p3', 'e1', 'e2', 'e3']
 }
 
 DATA_DIR = "data"

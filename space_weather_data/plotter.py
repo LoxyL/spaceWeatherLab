@@ -30,6 +30,8 @@ class SpaceWeatherPlotter:
             'DST': 'nT',
             'ASYM-H': 'nT',
             'PC': '',
+            'xrsa': 'W/m^2',
+            'xrsb': 'W/m^2',
         }
 
     
@@ -55,16 +57,18 @@ class SpaceWeatherPlotter:
         for i, param in enumerate(valid_params):
             ax = axes[i]
             
+            # --- Data Cleaning: Replace large negative fill values with NaN ---
+            # GOES data often uses large negative numbers for missing/invalid data.
+            param_data = pd.to_numeric(df[param], errors='coerce')
+            param_data[param_data < -1000] = float('nan')
+
             # Filter out NA values for plotting
-            mask = df[param].notna() & df['Time'].notna()
+            mask = param_data.notna() & df['Time'].notna()
             time_data = df.loc[mask, 'Time']
-            param_data = df.loc[mask, param]
-            
-            # Convert to numeric to ensure compatibility
-            param_data = pd.to_numeric(param_data, errors='coerce')
+            param_data = param_data[mask]
             
             # Plot only valid data
-            if len(time_data) > 0 and len(param_data.dropna()) > 0:
+            if len(time_data) > 0 and len(param_data) > 0:
                 ax.plot(time_data, param_data, linewidth=1.5, color='#1f77b4')
             
             unit = self.units.get(param, '')
@@ -74,6 +78,9 @@ class SpaceWeatherPlotter:
             
             if param in ['Bz', 'By', 'Bx', 'SYM-H', 'DST']:
                 ax.axhline(y=0, color='red', linestyle='--', linewidth=0.8, alpha=0.5)
+
+            if param in ['xrsa', 'xrsb']:
+                ax.set_yscale('log')
             
             # Set y-axis limits based on valid data
             y_valid = param_data.dropna()
