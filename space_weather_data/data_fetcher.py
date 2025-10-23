@@ -29,6 +29,7 @@ except Exception as e:
     UNLZW_AVAILABLE = False
 from datetime import datetime
 from typing import List
+from config import DATA_DIR
 
 try:
     # Import the top-level pyspedas library
@@ -94,8 +95,14 @@ class DataFetcher:
         self._swpc_f107_daily = "https://services.swpc.noaa.gov/json/f10cm_observed.json"
         # Monthly observed solar cycle indices (contains ssn and f10.7)
         self._swpc_cycle_indices = "https://services.swpc.noaa.gov/json/solar-cycle/observed-solar-cycle-indices.json"
-        # IONEX base (CDDIS). We'll request CODE products first (codg), falling back to JPL (jplg)
+        # IONEX base (CDDIS requires Earthdata login). Try public mirrors first, then CDDIS.
         self._ionex_bases = [
+            # JPL Sideshow public mirror (daily directories)
+            "https://sideshow.jpl.nasa.gov/pub/iono_daily/{yyyy}/codg{doy:03d}0.{yy:02d}i.Z",
+            "https://sideshow.jpl.nasa.gov/pub/iono_daily/{yyyy}/jplg{doy:03d}0.{yy:02d}i.Z",
+            # AIUB/CODE public HTTPS (uppercase naming)
+            "https://ftp.aiub.unibe.ch/CODE/{yyyy}/CODG{doy:03d}0.{yy:02d}I.Z",
+            # CDDIS (may require authentication)
             "https://cddis.nasa.gov/archive/gnss/products/ionex/{yyyy}/{doy:03d}/codg{doy:03d}0.{yy:02d}i.Z",
             "https://cddis.nasa.gov/archive/gnss/products/ionex/{yyyy}/{doy:03d}/jplg{doy:03d}0.{yy:02d}i.Z",
         ]
@@ -410,6 +417,44 @@ class DataFetcher:
         tmp_dir = Path(tempfile.gettempdir()) / "ionex_cache"
         tmp_dir.mkdir(parents=True, exist_ok=True)
 
+        # 1) Local fallback: check env var IONEX_LOCAL_DIR or project data/ionex
+        local_base = os.environ.get('IONEX_LOCAL_DIR')
+        candidate_dirs: List[Path] = []
+        if local_base:
+            candidate_dirs.append(Path(local_base))
+        # Project data/ionex directory
+        candidate_dirs.append(Path(DATA_DIR) / 'ionex')
+
+        local_names = [
+            f"codg{doy:03d}0.{yy:02d}i", f"jplg{doy:03d}0.{yy:02d}i",
+            f"CODG{doy:03d}0.{yy:02d}I", f"JPLG{doy:03d}0.{yy:02d}I",
+        ]
+        for d in candidate_dirs:
+            for name in local_names:
+                for ext in ('', '.Z', '.z'):
+                    p = d / name
+                    if ext:
+                        p = p.with_suffix(p.suffix + ext)
+                    if p.exists():
+                        # If compressed, decompress to temp dir
+                        if p.suffix.lower().endswith('z'):
+                            if not UNLZW_AVAILABLE:
+                                print("[WARN] unlzw3 not installed; cannot read .Z IONEX. Please: pip install unlzw3")
+                                break
+                            try:
+                                data = unlzw(p.read_bytes())
+                                out_path = tmp_dir / p.stem  # drop .Z
+                                with open(out_path, 'wb') as fout:
+                                    fout.write(data)
+                                print(f"[OK] Using local IONEX: {p}")
+                                return out_path
+                            except Exception as e:
+                                print(f"[WARN] Failed to decompress local IONEX '{p}': {e}")
+                                continue
+                        else:
+                            print(f"[OK] Using local IONEX: {p}")
+                            return p
+
         for template in self._ionex_bases:
             url = template.format(yyyy=yyyy, yy=yy, doy=doy)
             try:
@@ -435,10 +480,9 @@ class DataFetcher:
         return None
 
     def fetch_vtec(self, start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
-        """Fetch global VTEC grids from IONEX (CODE/JPL) and return full grid.
+        """Fetch global average VTEC from IONEX (CODE/JPL).
 
-        Output: long-form DataFrame with columns ['Time','Lat','Lon','VTEC'].
-        Note: This may be large for long ranges.
+        Output: DataFrame with columns ['Time','VTEC'].
         """
         if not GEORINEX_AVAILABLE:
             raise ImportError("georinex/xarray not installed. Please run: pip install georinex xarray unlzw3")
@@ -472,13 +516,13 @@ class DataFetcher:
                     day = (dt.datetime.combine(day, dt.time()) + dt.timedelta(days=1)).date()
                     continue
 
-                df_long = da_sel.to_dataframe(name='VTEC').reset_index()
-                df_long = df_long.rename(columns={'time': 'Time', 'lat': 'Lat', 'lon': 'Lon'})
-                # Ensure Longitude in [-180, 180]
-                if df_long['Lon'].max() > 180:
-                    df_long['Lon'] = ((df_long['Lon'] + 180) % 360) - 180
-                all_frames.append(df_long[['Time', 'Lat', 'Lon', 'VTEC']])
-                print(f"[OK] VTEC grid loaded for {day}: {len(df_long)} points")
+                # Calculate global average VTEC for each time step
+                da_mean = da_sel.mean(dim=['lat', 'lon'])
+                df_mean = da_mean.to_dataframe(name='VTEC').reset_index()
+                df_mean = df_mean.rename(columns={'time': 'Time'})
+
+                all_frames.append(df_mean[['Time', 'VTEC']])
+                print(f"[OK] Global mean VTEC loaded for {day}: {len(df_mean)} points")
             except Exception as e:
                 print(f"[WARN] Failed to parse IONEX for {day}: {e}")
 
@@ -486,5 +530,5 @@ class DataFetcher:
 
         if not all_frames:
             return pd.DataFrame()
-        df = pd.concat(all_frames, axis=0).sort_values(['Time','Lat','Lon']).reset_index(drop=True)
+        df = pd.concat(all_frames, axis=0).sort_values('Time').reset_index(drop=True)
         return df

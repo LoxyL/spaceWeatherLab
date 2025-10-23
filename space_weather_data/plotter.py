@@ -34,6 +34,7 @@ class SpaceWeatherPlotter:
             'xrsb': 'W/m^2',
             'F107': 'sfu',
             'SSN': '',
+            'VTEC': 'TECU',
         }
 
     

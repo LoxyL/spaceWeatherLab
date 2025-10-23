@@ -111,14 +111,14 @@ Daily or monthly observed indices fetched from NOAA SWPC public JSON services.
 
 ### IGS GIM VTEC (IONEX)
 
-Global ionospheric maps parsed from IONEX files (CODE/JPL). The loader keeps the FULL grid and returns a long-form table with columns `Time, Lat, Lon, VTEC`.
+Global ionospheric maps parsed from IONEX files (CODE/JPL). The loader now returns the global mean VTEC per epoch with columns `Time, VTEC` (unweighted mean across all grid cells).
 
 | | |
 |---|---|
-| **Approx. Time Range** | ~1998 – Present (varies by analysis center) |
-| **Temporal Resolution** | typically 2 hours |
+| **Approx. Time Range** | 1998 – Present (CODE/CODG; JPL/JPLG similar; occasional gaps) |
+| **Temporal Resolution** | 2 hours nominal (00:00, 02:00, ..., 22:00 UTC); some centers offer 1-hour or 15-min in recent years |
 | **Spatial Grid** | ~2.5° latitude × 5° longitude |
-| **Columns** | `Time`, `Lat`, `Lon`, `VTEC` |
+| **Columns** | `Time`, `VTEC` |
 | **Formats** | Input: IONEX (`*.i`, often compressed `*.Z`) |
 
 ## Command Line Options
@@ -183,13 +183,13 @@ ssn_df = fetcher.fetch_ssn(start_idx, end_idx)
 
 ### Fetching Solar Indices (CLI)
 ```bash
-# 获取 2024-10 月 F10.7 与 SSN 并保存为 CSV（各一列）
+# Fetch F10.7 and SSN for 2024-10 and save as CSV (one column each)
 python main.py 2024-10 -s indices -p F107 SSN
 ```
 
 ### Fetching VTEC (IONEX, CLI)
 ```bash
-# 获取 2024-10-23 的完整 VTEC 网格（CSV：Time,Lat,Lon,VTEC）
+# Fetch global-mean VTEC for 2024-10-23 (CSV: Time,VTEC)
 python main.py 2024-10-23 -s vtec -p VTEC
 ```
 
@@ -201,24 +201,11 @@ from space_weather_data.data_fetcher import DataFetcher
 parser = TimeParser()
 start, end = parser.parse("2024-10-23")
 fetcher = DataFetcher()
-vtec_df = fetcher.fetch_vtec(start, end)  # Time, Lat, Lon, VTEC
+vtec_df = fetcher.fetch_vtec(start, end)  # Time, VTEC (global mean)
 ```
 
-### Fetching VTEC (Full Grid, Python API)
-```python
-from space_weather_data.time_parser import TimeParser
-from space_weather_data.data_fetcher import DataFetcher
-
-parser = TimeParser()
-start_vtec, end_vtec = parser.parse("2024-10-10 to 2024-10-11")
-fetcher = DataFetcher()
-
-# Returns a long-form DataFrame with columns: Time, Lat, Lon, VTEC
-vtec_df = fetcher.fetch_vtec(start_vtec, end_vtec)
-
-# Example: compute global mean per epoch
-global_mean = vtec_df.groupby('Time')['VTEC'].mean().reset_index()
-```
+### VTEC Output Format
+Returns two columns `Time, VTEC`, where `VTEC` is the global mean at each epoch (simple average across all grid cells).
 
 ## Python API
 
@@ -276,7 +263,7 @@ Data is saved as **one CSV file per parameter**.
 - CDAWeb: `space_weather_cdaweb_{dataset}_{time_label}_{parameter}.csv`
 - GOES: `space_weather_goes_{probe}_{instrument}_{datatype}_{time_label}_{parameter}.csv`
 - Indices (F10.7/SSN): `space_weather_indices_{time_label}_{parameter}.csv`
-- VTEC (full grid): `space_weather_vtec_{time_label}_{parameter}.csv`
+- VTEC: `space_weather_vtec_{time_label}_{parameter}.csv`
 
 **Example Content (`..._Bz.csv`)**:
 ```csv
@@ -310,7 +297,7 @@ space_weather_data/
 - pandas, numpy, matplotlib
 - pyspedas (OMNI/CDAWeb/GOES)
 - cdflib
-- georinex, xarray, unlzw3（only VTEC/IONEX）
+- georinex, xarray, unlzw3 (only VTEC/IONEX)
 
 ## Links
 

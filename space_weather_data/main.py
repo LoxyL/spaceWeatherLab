@@ -18,6 +18,7 @@ from data_fetcher import DataFetcher
 from param_mapper import ParameterMapper
 from data_manager import DataManager
 from plotter import SpaceWeatherPlotter
+from derived_indices import compute_fp_qi
 
 
 class SpaceWeatherDataTool:
@@ -124,13 +125,42 @@ class SpaceWeatherDataTool:
                     s_df = fetcher.fetch_ssn(start_dt, end_dt)
                     if s_df is not None and not s_df.empty:
                         frames.append(s_df)
+                df = pd.DataFrame()
                 if frames:
                     df = frames[0]
                     for x in frames[1:]:
                         df = pd.merge(df, x, on='Time', how='outer')
-                    # Keep only requested columns
-                    keep_cols = ['Time'] + [p for p in ['F107','SSN'] if p in wanted]
-                    df = df[keep_cols].sort_values('Time')
+                    df = df.sort_values('Time')
+
+                # Compute derived FP/QI on demand (require at least one of F107/SSN)
+                derive = wanted.intersection({'FP','QI'})
+                if derive:
+                    if df is None or df.empty:
+                        # Try to fetch at least one prerequisite
+                        base_frames = []
+                        base_f = fetcher.fetch_f107(start_dt, end_dt)
+                        if base_f is not None and not base_f.empty:
+                            base_frames.append(base_f)
+                        base_s = fetcher.fetch_ssn(start_dt, end_dt)
+                        if base_s is not None and not base_s.empty:
+                            base_frames.append(base_s)
+                        if base_frames:
+                            df = base_frames[0]
+                            for x in base_frames[1:]:
+                                df = pd.merge(df, x, on='Time', how='outer')
+                            df = df.sort_values('Time')
+                        else:
+                            df = pd.DataFrame()
+
+                    if df is not None and not df.empty:
+                        derived_df = compute_fp_qi(df, derive)
+                        df = pd.merge(df, derived_df, on='Time', how='outer')
+
+                # Keep only requested columns present
+                keep_candidates = ['Time','F107','SSN','FP','QI']
+                keep_cols = ['Time'] + [c for c in keep_candidates if c in wanted and c in (df.columns if df is not None else [])]
+                if df is not None and not df.empty and len(keep_cols) > 1:
+                    df = df[keep_cols]
                 else:
                     df = pd.DataFrame()
 
