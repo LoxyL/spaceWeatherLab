@@ -101,6 +101,10 @@ class DataManager:
             if not all([probe, instrument]):
                 raise ValueError("Probe and instrument must be provided for goes source")
             base_name = f"space_weather_{source}_{probe}_{instrument}_{datatype}_{time_label}"
+        elif source == 'indices':
+            base_name = f"space_weather_{source}_{time_label}"
+        elif source == 'vtec':
+            base_name = f"space_weather_{source}_{time_label}"
         else: # omniweb
             resolution = kwargs.get('resolution', 'hourly')
             base_name = f"space_weather_{source}_{resolution}_{time_label}"

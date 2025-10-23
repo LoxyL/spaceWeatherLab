@@ -8,3 +8,6 @@ matplotlib>=3.6.0
 
 cdflib>=1.0.0
 pyspedas
+georinex==1.16.2
+xarray>=0.21,<2024.0
+unlzw3>=0.2.2

@@ -49,6 +49,18 @@ DATA_SOURCES = {
         "description": "Geostationary Operational Environmental Satellites data",
         "resolution": ["1min", "5min"], # Example resolutions
     },
+    "indices": {
+        "name": "NOAA SWPC Indices",
+        "url": "https://services.swpc.noaa.gov/",
+        "description": "Solar indices such as F10.7 and Sunspot Number (SSN)",
+        "resolution": [],
+    },
+    "vtec": {
+        "name": "IGS GIM (IONEX)",
+        "url": "https://cddis.nasa.gov/",
+        "description": "Global Ionospheric Maps (CODE/JPL) VTEC grids",
+        "resolution": [],
+    },
 }
 
 DEFAULT_GOES_PARAMETERS = {

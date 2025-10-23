@@ -10,6 +10,8 @@ A versatile command-line and Python tool to fetch, manage, and plot space weathe
   - [NASA OMNIweb (Default)](#nasa-omniweb-default)
   - [NASA CDAWeb](#nasa-cdaweb)
   - [NOAA GOES](#noaa-goes)
+  - [Solar Indices (F10.7, SSN)](#solar-indices-f107-ssn)
+  - [IGS GIM VTEC (IONEX)](#igs-gim-vtec-ionex)
 - [Command Line Options](#command-line-options)
 - [Usage Examples](#usage-examples)
 - [Python API](#python-api)
@@ -98,6 +100,27 @@ Provides access to Geostationary Operational Environmental Satellites data, cruc
 
 - **Supported Probes**: GOES satellites `8` through `15`. The exact time range depends on the specific probe's operational window.
 
+### Solar Indices (F10.7, SSN)
+
+Daily or monthly observed indices fetched from NOAA SWPC public JSON services.
+
+| Index  | Description                 | Columns | Approx. Time Range | Resolution | Source |
+| :----- | :-------------------------- | :------ | :------------------ | :-------- | :----- |
+| F10.7  | 10.7 cm solar radio flux    | `F107`  | 2004-10 – Present   | Daily (from monthly observed, forward-filled) | SWPC |
+| SSN    | International Sunspot Number| `SSN`   | 1749-01 – Present   | Daily (from monthly observed, forward-filled) | SWPC |
+
+### IGS GIM VTEC (IONEX)
+
+Global ionospheric maps parsed from IONEX files (CODE/JPL). The loader keeps the FULL grid and returns a long-form table with columns `Time, Lat, Lon, VTEC`.
+
+| | |
+|---|---|
+| **Approx. Time Range** | ~1998 – Present (varies by analysis center) |
+| **Temporal Resolution** | typically 2 hours |
+| **Spatial Grid** | ~2.5° latitude × 5° longitude |
+| **Columns** | `Time`, `Lat`, `Lon`, `VTEC` |
+| **Formats** | Input: IONEX (`*.i`, often compressed `*.Z`) |
+
 ## Command Line Options
 
 | Option              | Short | Description                                                               |
@@ -105,6 +128,7 @@ Provides access to Geostationary Operational Environmental Satellites data, cruc
 | `time_input`        |       | Time range (YYYY-MM-DD, YYYY-MM, YYYY-MM-DD to YYYY-MM-DD)                 |
 | `--parameters`      | `-p`  | Parameters/variables to fetch (e.g., `BZ_GSE`, `Vsw`). Optional for GOES. |
 | `--source`          | `-s`  | Data source (`omniweb`, `cdaweb`, `goes`). Default: `omniweb`.             |
+|                       |       | Also supports `indices` (F10.7/SSN) and `vtec` (IGS GIM).                 |
 | `--resolution`      | `-r`  | Time resolution (`hourly`, `5min`, `1min`). For OMNI.                      |
 | `--dataset`         |       | CDAWeb dataset ID (e.g., `WI_H0_MFI`). **Required for `cdaweb`**.           |
 | `--probe`           |       | GOES satellite probe number (e.g., `15`). **Required for `goes`**.          |
@@ -141,6 +165,61 @@ python main.py 2013-03-17 -s goes --probe 15 --instrument xrs
 python main.py 2012-07-12 -s goes --probe 13 --instrument mag --datatype ep8 --plot
 ```
 
+### Fetching Solar Indices (Python API)
+```python
+from space_weather_data.time_parser import TimeParser
+from space_weather_data.data_fetcher import DataFetcher
+
+parser = TimeParser()
+start_idx, end_idx = parser.parse("2024-10")
+fetcher = DataFetcher()
+
+# F10.7 daily series
+f107_df = fetcher.fetch_f107(start_idx, end_idx)
+
+# Sunspot Number daily (monthly observed forward-filled)
+ssn_df = fetcher.fetch_ssn(start_idx, end_idx)
+```
+
+### Fetching Solar Indices (CLI)
+```bash
+# 获取 2024-10 月 F10.7 与 SSN 并保存为 CSV（各一列）
+python main.py 2024-10 -s indices -p F107 SSN
+```
+
+### Fetching VTEC (IONEX, CLI)
+```bash
+# 获取 2024-10-23 的完整 VTEC 网格（CSV：Time,Lat,Lon,VTEC）
+python main.py 2024-10-23 -s vtec -p VTEC
+```
+
+### Fetching VTEC (IONEX, Python API)
+```python
+from space_weather_data.time_parser import TimeParser
+from space_weather_data.data_fetcher import DataFetcher
+
+parser = TimeParser()
+start, end = parser.parse("2024-10-23")
+fetcher = DataFetcher()
+vtec_df = fetcher.fetch_vtec(start, end)  # Time, Lat, Lon, VTEC
+```
+
+### Fetching VTEC (Full Grid, Python API)
+```python
+from space_weather_data.time_parser import TimeParser
+from space_weather_data.data_fetcher import DataFetcher
+
+parser = TimeParser()
+start_vtec, end_vtec = parser.parse("2024-10-10 to 2024-10-11")
+fetcher = DataFetcher()
+
+# Returns a long-form DataFrame with columns: Time, Lat, Lon, VTEC
+vtec_df = fetcher.fetch_vtec(start_vtec, end_vtec)
+
+# Example: compute global mean per epoch
+global_mean = vtec_df.groupby('Time')['VTEC'].mean().reset_index()
+```
+
 ## Python API
 
 ```python
@@ -174,6 +253,11 @@ goes_df = fetcher.fetch_goes(
     datatype='1min'
 )
 
+# --- Solar Indices ---
+start_idx, end_idx = parser.parse("2024-10")
+f107_df = fetcher.fetch_f107(start_idx, end_idx)
+ssn_df = fetcher.fetch_ssn(start_idx, end_idx)
+
 # --- Saving Data ---
 manager = DataManager()
 # (Example for saving one parameter from the OMNI dataframe)
@@ -191,6 +275,8 @@ Data is saved as **one CSV file per parameter**.
 - OMNI: `space_weather_omniweb_{resolution}_{time_label}_{parameter}.csv`
 - CDAWeb: `space_weather_cdaweb_{dataset}_{time_label}_{parameter}.csv`
 - GOES: `space_weather_goes_{probe}_{instrument}_{datatype}_{time_label}_{parameter}.csv`
+- Indices (F10.7/SSN): `space_weather_indices_{time_label}_{parameter}.csv`
+- VTEC (full grid): `space_weather_vtec_{time_label}_{parameter}.csv`
 
 **Example Content (`..._Bz.csv`)**:
 ```csv
@@ -221,10 +307,10 @@ space_weather_data/
 ## Requirements
 
 - Python 3.7+
-- pyspedas
-- pandas
-- numpy
-- matplotlib
+- pandas, numpy, matplotlib
+- pyspedas (OMNI/CDAWeb/GOES)
+- cdflib
+- georinex, xarray, unlzw3（only VTEC/IONEX）
 
 ## Links
 

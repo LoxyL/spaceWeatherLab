@@ -1,6 +1,32 @@
-"""Data fetching module - refactored to use pyspedas library"""
+"""Data fetching module - refactored to use pyspedas library
+
+Adds lightweight helpers to fetch solar indices (F107, SSN) from
+public NOAA/SWPC endpoints to complement OMNI/CDAWeb/GOES.
+"""
 
 import pandas as pd
+import requests
+import os
+from pathlib import Path
+import tempfile
+from typing import Optional
+import datetime as dt
+
+try:
+    import georinex as gr
+    import xarray as xr
+    GEORINEX_AVAILABLE = True
+except Exception as e:
+    print(f"Info: georinex/xarray not available ({e}); VTEC fetching will be disabled unless installed.")
+    GEORINEX_AVAILABLE = False
+
+try:
+    # For .Z (LZW) compressed IONEX files commonly used by IGS/CODE
+    from unlzw3 import unlzw
+    UNLZW_AVAILABLE = True
+except Exception as e:
+    print(f"Info: unlzw3 not available ({e}); cannot decompress .Z IONEX files.")
+    UNLZW_AVAILABLE = False
 from datetime import datetime
 from typing import List
 
@@ -63,6 +89,16 @@ class DataFetcher:
             'particles': pyspedas.goes.eps,      # Corrected from 'particles' to 'eps'
             'xrs': pyspedas.goes.xrs
         }
+
+        # Public endpoints for indices (kept internal to avoid new CLI sources)
+        self._swpc_f107_daily = "https://services.swpc.noaa.gov/json/f10cm_observed.json"
+        # Monthly observed solar cycle indices (contains ssn and f10.7)
+        self._swpc_cycle_indices = "https://services.swpc.noaa.gov/json/solar-cycle/observed-solar-cycle-indices.json"
+        # IONEX base (CDDIS). We'll request CODE products first (codg), falling back to JPL (jplg)
+        self._ionex_bases = [
+            "https://cddis.nasa.gov/archive/gnss/products/ionex/{yyyy}/{doy:03d}/codg{doy:03d}0.{yy:02d}i.Z",
+            "https://cddis.nasa.gov/archive/gnss/products/ionex/{yyyy}/{doy:03d}/jplg{doy:03d}0.{yy:02d}i.Z",
+        ]
 
     def _build_goes_pyspedas_name(self, simple_name: str, probe: str, instrument: str) -> str:
         """Constructs the full pyspedas variable name from a simple name."""
@@ -258,3 +294,197 @@ class DataFetcher:
         except Exception as e:
             print(f"Failed to download GOES data: {e}")
             return pd.DataFrame()
+
+    # -------------------- External Indices --------------------
+    def fetch_f107(self, start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
+        """Fetch daily F10.7 (sfu) from NOAA/SWPC.
+
+        Notes:
+            - Tries daily endpoint first; if unavailable, falls back to
+              monthly observed solar cycle indices and forward-fills to daily.
+        Returns:
+            DataFrame with columns: ['Time', 'F107'] (UTC dates at 00:00)
+        """
+        try:
+            # Try daily observed JSON
+            resp = requests.get(self._swpc_f107_daily, timeout=20)
+            if resp.ok:
+                data = resp.json()
+                records = []
+                for d in data or []:
+                    # Common field names seen in SWPC responses
+                    time_str = d.get('time_tag') or d.get('date') or d.get('timestamp')
+                    flux = d.get('flux') or d.get('f10_7') or d.get('f107') or d.get('observed')
+                    if time_str is None or flux is None:
+                        continue
+                    try:
+                        t = pd.to_datetime(time_str).normalize()
+                        f = float(flux)
+                        records.append((t, f))
+                    except Exception:
+                        continue
+                if records:
+                    df = pd.DataFrame(records, columns=['Time', 'F107'])
+                    df = df[(df['Time'] >= pd.to_datetime(start_dt).normalize()) & (df['Time'] <= pd.to_datetime(end_dt).normalize())]
+                    df = df.sort_values('Time').reset_index(drop=True)
+                    print(f"\n[OK] Retrieved {len(df)} F107 records from SWPC (daily)")
+                    return df
+        except Exception as e:
+            print(f"[WARN] SWPC F107 daily endpoint failed: {e}")
+
+        # Fallback: monthly observed solar cycle indices
+        try:
+            resp = requests.get(self._swpc_cycle_indices, timeout=20)
+            resp.raise_for_status()
+            data = resp.json()
+            records = []
+            for d in data or []:
+                time_str = d.get('time_tag') or d.get('time-tag') or d.get('date')
+                f = d.get('f10.7') or d.get('f10_7') or d.get('observed_f10_7') or d.get('f107')
+                if time_str is None or f is None:
+                    continue
+                try:
+                    # Monthly values -> use first day of month
+                    t = pd.to_datetime(time_str).to_period('M').to_timestamp()
+                    records.append((t, float(f)))
+                except Exception:
+                    continue
+            if not records:
+                return pd.DataFrame()
+            df_m = pd.DataFrame(records, columns=['Time', 'F107']).sort_values('Time')
+            # Upsample to daily by forward-fill
+            idx = pd.date_range(start=df_m['Time'].min(), end=df_m['Time'].max(), freq='D')
+            df = df_m.set_index('Time').reindex(idx).ffill().reset_index().rename(columns={'index': 'Time'})
+            df = df[(df['Time'] >= pd.to_datetime(start_dt).normalize()) & (df['Time'] <= pd.to_datetime(end_dt).normalize())]
+            df = df.reset_index(drop=True)
+            print(f"\n[OK] Retrieved {len(df)} F107 records from SWPC (monthly→daily)")
+            return df
+        except Exception as e:
+            print(f"Failed to download F107 indices: {e}")
+            return pd.DataFrame()
+
+    def fetch_ssn(self, start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
+        """Fetch Sunspot Number (SSN) from SWPC monthly observed indices.
+
+        Returns a daily series by forward-filling monthly values for convenience.
+        Columns: ['Time', 'SSN']
+        """
+        try:
+            resp = requests.get(self._swpc_cycle_indices, timeout=20)
+            resp.raise_for_status()
+            data = resp.json()
+            records = []
+            for d in data or []:
+                time_str = d.get('time_tag') or d.get('time-tag') or d.get('date')
+                ssn = d.get('ssn') or d.get('sunspot_number') or d.get('ri')
+                if time_str is None or ssn is None:
+                    continue
+                try:
+                    t = pd.to_datetime(time_str).to_period('M').to_timestamp()
+                    records.append((t, float(ssn)))
+                except Exception:
+                    continue
+            if not records:
+                return pd.DataFrame()
+            df_m = pd.DataFrame(records, columns=['Time', 'SSN']).sort_values('Time')
+            idx = pd.date_range(start=df_m['Time'].min(), end=df_m['Time'].max(), freq='D')
+            df = df_m.set_index('Time').reindex(idx).ffill().reset_index().rename(columns={'index': 'Time'})
+            df = df[(df['Time'] >= pd.to_datetime(start_dt).normalize()) & (df['Time'] <= pd.to_datetime(end_dt).normalize())]
+            df = df.reset_index(drop=True)
+            print(f"\n[OK] Retrieved {len(df)} SSN records from SWPC (monthly→daily)")
+            return df
+        except Exception as e:
+            print(f"Failed to download SSN indices: {e}")
+            return pd.DataFrame()
+
+    # -------------------- VTEC from IONEX (CODE/JPL) --------------------
+    def _download_ionex_for_day(self, day: datetime) -> Optional[Path]:
+        """Download and decompress one day's IONEX (CODE/JPL) file.
+
+        Returns local decompressed path (Path) or None if all sources fail.
+        """
+        yyyy = day.year
+        yy = yyyy % 100
+        doy = int(day.strftime('%j'))
+
+        tmp_dir = Path(tempfile.gettempdir()) / "ionex_cache"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+
+        for template in self._ionex_bases:
+            url = template.format(yyyy=yyyy, yy=yy, doy=doy)
+            try:
+                resp = requests.get(url, timeout=60)
+                if not resp.ok:
+                    continue
+                compressed_path = tmp_dir / Path(url).name
+                with open(compressed_path, 'wb') as f:
+                    f.write(resp.content)
+                # Decompress .Z
+                if compressed_path.suffix.lower() == '.Z' or compressed_path.suffix.lower() == '.z':
+                    if not UNLZW_AVAILABLE:
+                        print("[WARN] unlzw3 not installed; cannot read .Z IONEX. Please: pip install unlzw3")
+                        return None
+                    data = unlzw(compressed_path.read_bytes())
+                    out_path = compressed_path.with_suffix('')  # drop .Z
+                    with open(out_path, 'wb') as fout:
+                        fout.write(data)
+                    return out_path
+                return compressed_path
+            except Exception:
+                continue
+        return None
+
+    def fetch_vtec(self, start_dt: datetime, end_dt: datetime) -> pd.DataFrame:
+        """Fetch global VTEC grids from IONEX (CODE/JPL) and return full grid.
+
+        Output: long-form DataFrame with columns ['Time','Lat','Lon','VTEC'].
+        Note: This may be large for long ranges.
+        """
+        if not GEORINEX_AVAILABLE:
+            raise ImportError("georinex/xarray not installed. Please run: pip install georinex xarray unlzw3")
+
+        all_frames: List[pd.DataFrame] = []
+        day = start_dt.date()
+        end_day = end_dt.date()
+
+        while day <= end_day:
+            local_path = self._download_ionex_for_day(datetime.combine(day, dt.time()))
+            if local_path is None or not local_path.exists():
+                print(f"[INFO] IONEX not available for {day}")
+                day = (dt.datetime.combine(day, dt.time()) + dt.timedelta(days=1)).date()
+                continue
+
+            try:
+                ds = gr.ionex(str(local_path))
+                # Identify TEC variable name
+                var_name = None
+                if hasattr(ds, 'data_vars') and len(ds.data_vars) > 0:
+                    var_name = list(ds.data_vars)[0]
+                else:
+                    var_name = 'tec'
+
+                da = ds[var_name]
+                # Filter to requested time range
+                t0 = pd.to_datetime(start_dt)
+                t1 = pd.to_datetime(end_dt)
+                da_sel = da.sel(time=slice(t0, t1))
+                if da_sel.size == 0:
+                    day = (dt.datetime.combine(day, dt.time()) + dt.timedelta(days=1)).date()
+                    continue
+
+                df_long = da_sel.to_dataframe(name='VTEC').reset_index()
+                df_long = df_long.rename(columns={'time': 'Time', 'lat': 'Lat', 'lon': 'Lon'})
+                # Ensure Longitude in [-180, 180]
+                if df_long['Lon'].max() > 180:
+                    df_long['Lon'] = ((df_long['Lon'] + 180) % 360) - 180
+                all_frames.append(df_long[['Time', 'Lat', 'Lon', 'VTEC']])
+                print(f"[OK] VTEC grid loaded for {day}: {len(df_long)} points")
+            except Exception as e:
+                print(f"[WARN] Failed to parse IONEX for {day}: {e}")
+
+            day = (dt.datetime.combine(day, dt.time()) + dt.timedelta(days=1)).date()
+
+        if not all_frames:
+            return pd.DataFrame()
+        df = pd.concat(all_frames, axis=0).sort_values(['Time','Lat','Lon']).reset_index(drop=True)
+        return df

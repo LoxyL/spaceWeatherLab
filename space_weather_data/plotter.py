@@ -32,6 +32,8 @@ class SpaceWeatherPlotter:
             'PC': '',
             'xrsa': 'W/m^2',
             'xrsb': 'W/m^2',
+            'F107': 'sfu',
+            'SSN': '',
         }
 
     

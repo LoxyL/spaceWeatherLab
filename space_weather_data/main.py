@@ -60,6 +60,11 @@ class SpaceWeatherDataTool:
                 else:
                     print(f"\nError: No default parameters defined for GOES instrument '{instrument}'.")
                     return False
+            elif source == 'indices':
+                # Default to F107 and SSN
+                params_to_fetch = ['F107', 'SSN']
+            elif source == 'vtec':
+                params_to_fetch = ['VTEC']
         else:
             params_to_fetch = self.param_mapper.map(parameters)
 
@@ -106,6 +111,31 @@ class SpaceWeatherDataTool:
                     probe, start_dt, end_dt, instrument, datatype or '1min', 
                     requested_params=params_to_fetch
                 )
+
+            elif source == 'indices':
+                # Fetch selected indices and outer-merge on Time
+                frames = []
+                wanted = set([p.upper() for p in params_to_fetch])
+                if 'F107' in wanted:
+                    f_df = fetcher.fetch_f107(start_dt, end_dt)
+                    if f_df is not None and not f_df.empty:
+                        frames.append(f_df)
+                if 'SSN' in wanted:
+                    s_df = fetcher.fetch_ssn(start_dt, end_dt)
+                    if s_df is not None and not s_df.empty:
+                        frames.append(s_df)
+                if frames:
+                    df = frames[0]
+                    for x in frames[1:]:
+                        df = pd.merge(df, x, on='Time', how='outer')
+                    # Keep only requested columns
+                    keep_cols = ['Time'] + [p for p in ['F107','SSN'] if p in wanted]
+                    df = df[keep_cols].sort_values('Time')
+                else:
+                    df = pd.DataFrame()
+
+            elif source == 'vtec':
+                df = fetcher.fetch_vtec(start_dt, end_dt)
 
 
             if df is None or df.empty:
