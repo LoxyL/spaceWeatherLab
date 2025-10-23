@@ -80,6 +80,14 @@ class ARModel(nn.Module):
             ntp = ntp.view([b,1,d]).contiguous()
             x = torch.cat((x,ntp), dim=1)
         return x
+    
+    @torch.no_grad()
+    def preprocess(self, x):
+        return x # TODO
+    
+    @torch.no_grad()
+    def decode(self, x):
+        return x # TODO
 
 
 

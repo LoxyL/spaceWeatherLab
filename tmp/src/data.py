@@ -163,7 +163,7 @@ def build_cached_dataset(data_config):
 class InfiniteDataLoaderFunc:
 
     def __init__(self, func, data_config):
-        self.f = func
+        self.func = func
         self.dc = data_config
 
     def __iter__(self):
@@ -173,10 +173,15 @@ class InfiniteDataLoaderFunc:
 @torch.no_grad()
 def synthesize_batch(data_config):
     b,s,d = data_config['shape']
+    return torch.randn(data_config['shape'])
     
 
 @torch.no_grad()
 def build_synthetic_dataset(data_config):
     train_data_loader = InfiniteDataLoaderFunc(synthesize_batch,
                                                 data_config=data_config)
-    return train_data_loader, None
+    val_data_loader = InfiniteDataLoaderFunc(synthesize_batch,
+                                                data_config=data_config)
+    test_data_loader = InfiniteDataLoaderFunc(synthesize_batch,
+                                                data_config=data_config)
+    return train_data_loader, val_data_loader, test_data_loader

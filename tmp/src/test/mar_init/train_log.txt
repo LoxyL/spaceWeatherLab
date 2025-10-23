@@ -1,0 +1,32 @@
+
+Train step 3
+loss: 2.0023
+time per kstep: 1124
+peak GPU mem: 0.1 GB
+
+Test
+loss:2.0002+-0.0102
+Train step 6
+loss: 1.9948
+time per kstep: 2974
+peak GPU mem: 0.1 GB
+
+Test
+loss:2.0005+-0.0106
+Train step 9
+loss: 2.0076
+time per kstep: 2962
+peak GPU mem: 0.1 GB
+
+Test
+loss:2.0003+-0.0104
+Train step 12
+loss: 1.9943
+time per kstep: 2963
+peak GPU mem: 0.1 GB
+
+Test
+loss:2.0004+-0.0102
+Skipped steps: 0
+Test
+loss:2.0000+-0.0103

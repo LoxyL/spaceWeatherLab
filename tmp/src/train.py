@@ -8,6 +8,8 @@ def train(model,
           lr_scheduler,
           train_config,
           train_dataset,
+          val_dataset,
+          test_dataset,
           logger: Logger):
     if train_config['train_steps']<=0:
         model.eval()
@@ -29,17 +31,16 @@ def train(model,
             lr_scheduler.step()
         if logger.step % train_config['eval_every_n_steps'] == 0:
             model.eval()
-            eval_generation(model, train_config, logger)
+            test(model, logger, val_dataset, num_test_steps=1000, is_eval=True)
         if logger.step == train_config['train_steps']:
             model.eval()
             logger.train_end()
             break
     
-    loss1=test(model, logger, train_dataset, num_test_steps=1000)
+    loss1=test(model, logger, test_dataset, num_test_steps=1000)
     
-    final_eval_generation(model, train_config, logger)
     if train_config['save']:
-        logger.log_net(model.net.cpu(),f"edm_{logger.step}_{logger.model_name}")
+        logger.log_net(model.cpu(),f"mar_{logger.step}_{logger.model_name}")
     return
 
 @torch.no_grad()
@@ -118,22 +119,24 @@ def final_eval_generation(model, train_config, logger, verbose=False):
 @torch.no_grad()
 def test(model,
          logger,
-         train_dataset,
+         dataset,
          num_test_steps=1000,
+         is_eval=False
          ):
     model.eval()
     acc_loss = []
     step = 0
-    for [x0, cls] in train_dataset:
+    for x0 in dataset:
         step += 1
-        x0, cls = x0.to(model.device), cls.to(model.device)
-        x0 = model.ae.preprocess(x0)
-        loss = model.train_step(x0, cls)
+        x0 = x0.to(model.device)
+        x0 = model.preprocess(x0)
+        loss = model.train_step(x0)
         acc_loss.append(loss.cpu().item())
         if step >= num_test_steps:
             break
     acc_loss=np.asarray(acc_loss)
-    info = f"Test\n" \
+    mode="Eval" if is_eval else "Test"
+    info = f"{mode}\n" \
            + f"loss:{acc_loss.mean():.4f}+-{acc_loss.std():.4f}" 
     print(info)
     logger.log_text(info, "train_log", newline=True)

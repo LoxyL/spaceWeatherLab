@@ -67,7 +67,7 @@ def build_model(logger,
     t_params = calculate_num_params(model.transformer)
     mlp_params = calculate_num_params(model.mlp)
     t_trainable_params = calculate_num_params(model.transformer, trainable_only=True)
-    info = f"T params: {t_params:,}, MLP params: {mlp_params:,}, Trainable: {t_trainable_params:,}"
+    info = f"T params: {t_params:,}, MLP params: {mlp_params:,}, TTrainable: {t_trainable_params:,}"
     print(info)
     logger.log_text(info, "config", newline=True)
 
@@ -79,7 +79,8 @@ def build_model(logger,
         print("running on cuda")
     else:
         print("running on cpu!")
-    optim = torch.optim.Adam(model.net.parameters(),
+    # TODO: use AdamW
+    optim = torch.optim.Adam(model.parameters(),
                              lr=train_config['base_learning_rate'],
                              betas=train_config['betas'])
     if train_config['use_lr_scheduler']:
