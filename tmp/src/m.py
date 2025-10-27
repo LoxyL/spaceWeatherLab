@@ -83,7 +83,7 @@ data_config = dict(
 
 from train import train
 from build_model import build_model
-from data import build_synthetic_dataset
+from data import build_dataset
 from model import ARModel
 from utils import Logger
 
@@ -109,7 +109,7 @@ logger.log_text(str(train_config), "config", newline=True)
 
 torch.manual_seed(42+hash(global_config['ver'])%10000)
 
-train_dataset, val_dataset, test_dataset = build_synthetic_dataset(data_config)
+train_dataset, val_dataset, test_dataset = build_dataset(data_config)
 
 logger.log_text(str(data_config), "config", newline=True)
 

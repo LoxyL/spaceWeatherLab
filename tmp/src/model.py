@@ -32,7 +32,7 @@ class ARModel(nn.Module):
     def calc_loss(self, v_pred, v_gt):
         return self.diffuser.calc_loss(v_pred, v_gt)
     
-    def train_step(self, x0:torch.Tensor): # x0 seq = s + 1
+    def train_step(self, x0:torch.Tensor): # x0 seq = s + 1 TODO: add SOS
         b,s_,d=x0.shape
         s=s_-1
         cond:torch.Tensor = self.get_cond(x0[:,:-1])  # [b, s, c]

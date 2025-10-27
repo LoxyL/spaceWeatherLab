@@ -34,6 +34,7 @@ def train(model,
             test(model, logger, val_dataset, num_test_steps=1000, is_eval=True)
         if logger.step == train_config['train_steps']:
             model.eval()
+            test_gen(model,test_dataset,logger,num=10)
             logger.train_end()
             break
     
@@ -42,6 +43,19 @@ def train(model,
     if train_config['save']:
         logger.log_net(model.cpu(),f"mar_{logger.step}_{logger.model_name}")
     return
+
+@torch.no_grad()
+def test_gen(model, test_dataset, logger, num=10):
+    x0s=next(iter(test_dataset))[:4]
+    x0s= x0s.to(model.device)
+    x0s = model.preprocess(x0s)
+    out = []
+    print("generating")
+    for _ in range(num):
+        res = model.gen(x0s[:, :-33],scope=32)
+        out.append(res.cpu().numpy())
+    logger.test_gen(x0s.cpu().numpy(), out=out, idx=32)
+    
 
 @torch.no_grad()
 def eval_generation(model, train_config, logger):
@@ -137,7 +151,7 @@ def test(model,
     acc_loss=np.asarray(acc_loss)
     mode="Eval" if is_eval else "Test"
     info = f"{mode}\n" \
-           + f"loss:{acc_loss.mean():.4f}+-{acc_loss.std():.4f}" 
+           + f"loss:{acc_loss.mean():.4f}+-{acc_loss.std():.4f}\n" 
     print(info)
     logger.log_text(info, "train_log", newline=True)
     return acc_loss.mean()

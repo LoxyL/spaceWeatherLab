@@ -3,6 +3,9 @@ mar/*
 README.md
 temp.ipynb
 wt.py
+data/*
+test/*
+m copy.ipynb
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

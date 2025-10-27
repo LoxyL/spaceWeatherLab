@@ -41,7 +41,7 @@ class ImageDataset(Dataset):
         return image, self.label
 
 
-class TensorDataset(Dataset):
+class TensorDatasetImage(Dataset):
     def __init__(self, images, labels):
         self.images = images
         self.labels = labels
@@ -134,7 +134,7 @@ def build_cached_dataset(data_config):
     print(f"x shape: {x.shape}, cls shape: {cls.shape}")
 
     if abs(data_config['split'] - 1.0) < 1e-6:
-        train_data = TensorDataset(x, cls)
+        train_data = TensorDatasetImage(x, cls)
         print("train length", len(train_data))
         train_data_loader = InfiniteDataLoader(train_data,
                                                batch_size=data_config['batch_size'],
@@ -145,9 +145,9 @@ def build_cached_dataset(data_config):
     s = x.shape[0]
     select_every_n = round(1 / (1 - data_config['split']))
     is_test = torch.arange(0, s) % select_every_n == 0
-    train_data = TensorDataset(x[~is_test], cls[~is_test])
+    train_data = TensorDatasetImage(x[~is_test], cls[~is_test])
     print("train length", len(train_data))
-    test_data = TensorDataset(x[is_test], cls[is_test])
+    test_data = TensorDatasetImage(x[is_test], cls[is_test])
     print("test length", len(test_data))
     train_data_loader = InfiniteDataLoader(train_data,
                                            batch_size=data_config['batch_size'],
@@ -161,7 +161,7 @@ def build_cached_dataset(data_config):
 
 
 class InfiniteDataLoaderFunc:
-
+    # for synthetic data
     def __init__(self, func, data_config):
         self.func = func
         self.dc = data_config
@@ -173,11 +173,20 @@ class InfiniteDataLoaderFunc:
 @torch.no_grad()
 def synthesize_batch(data_config):
     b,s,d = data_config['shape']
-    return torch.randn(data_config['shape'])
+
+    data = torch.randn(b,s,d//2)
+    data_ = torch.roll(data,shifts=1,dims=1)
+    return torch.cat([data,data_],dim=-1)
+
+    x1 = torch.ones((b,))
+    x2 = torch.ones((d,))
+    t = torch.linspace(-1,1,s)
+    _,T,_=torch.meshgrid([x1,t,x2])
+    return torch.sin(3.14*T*10)
     
 
 @torch.no_grad()
-def build_synthetic_dataset(data_config):
+def build_dataset(data_config):
     train_data_loader = InfiniteDataLoaderFunc(synthesize_batch,
                                                 data_config=data_config)
     val_data_loader = InfiniteDataLoaderFunc(synthesize_batch,
@@ -185,3 +194,19 @@ def build_synthetic_dataset(data_config):
     test_data_loader = InfiniteDataLoaderFunc(synthesize_batch,
                                                 data_config=data_config)
     return train_data_loader, val_data_loader, test_data_loader
+
+from data_seq import create_data_loaders
+
+# data_config = dict(
+#     shape=(train_config['batch_size'],
+#            train_config['max_seq_len'],
+#            transformer_config['inp_dim']),
+#     batch_size=train_config['batch_size'],
+#     split=[0.5,0.25,0.25], # train/val/test split
+#     space_weather_data_root="...",
+# )
+
+
+@torch.no_grad()
+def build_dataset(data_config):
+    return create_data_loaders(data_config=data_config)

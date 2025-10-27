@@ -30,3 +30,200 @@ loss:2.0004+-0.0102
 Skipped steps: 0
 Test
 loss:2.0000+-0.0103
+Train step 3
+loss: 1.5053
+time per kstep: 1047
+peak GPU mem: 0.1 GB
+
+Eval
+loss:1.4991+-0.0055
+Train step 6
+loss: 1.4911
+time per kstep: 2887
+peak GPU mem: 0.1 GB
+
+Eval
+loss:1.4959+-0.0056
+Train step 9
+loss: 1.4964
+time per kstep: 3125
+peak GPU mem: 0.1 GB
+
+Eval
+loss:1.4934+-0.0057
+Train step 12
+loss: 1.4919
+time per kstep: 3306
+peak GPU mem: 0.1 GB
+
+Eval
+loss:1.4910+-0.0055
+Skipped steps: 0
+Test
+loss:1.4907+-0.0056
+Train step 25
+loss: 1.4653
+time per kstep: 88
+peak GPU mem: 0.0 GB
+
+Train step 50
+loss: 1.3808
+time per kstep: 20
+peak GPU mem: 0.0 GB
+
+Eval
+loss:1.3284+-0.0082
+Train step 75
+loss: 1.2724
+time per kstep: 312
+peak GPU mem: 0.0 GB
+
+Train step 100
+loss: 1.1262
+time per kstep: 21
+peak GPU mem: 0.0 GB
+
+Eval
+loss:1.0450+-0.0077
+Skipped steps: 0
+Test
+loss:1.0448+-0.0078
+Train step 50
+loss: 1.9988
+time per kstep: 54
+peak GPU mem: 0.0 GB
+
+Train step 100
+loss: 1.9896
+time per kstep: 22
+peak GPU mem: 0.0 GB
+
+Eval
+loss:1.9685+-0.0178
+Train step 150
+loss: 1.9265
+time per kstep: 165
+peak GPU mem: 0.0 GB
+
+Train step 200
+loss: 1.8840
+time per kstep: 22
+peak GPU mem: 0.0 GB
+
+Eval
+loss:1.8683+-0.0174
+Skipped steps: 0
+Test
+loss:1.8681+-0.0172
+Train step 50
+loss: 44833.9775
+time per kstep: 81
+peak GPU mem: 0.1 GB
+
+Train step 100
+loss: 42847.3470
+time per kstep: 23
+peak GPU mem: 0.1 GB
+
+Train step 50
+loss: 1.9252
+time per kstep: 79
+peak GPU mem: 0.1 GB
+
+Train step 100
+loss: 1.8722
+time per kstep: 22
+peak GPU mem: 0.1 GB
+
+Train step 50
+loss: 2.0534
+time per kstep: 80
+peak GPU mem: 0.1 GB
+
+Train step 100
+loss: 1.8408
+time per kstep: 22
+peak GPU mem: 0.1 GB
+
+Train step 50
+loss: 2.1129
+time per kstep: 78
+peak GPU mem: 0.1 GB
+
+Train step 100
+loss: 1.8469
+time per kstep: 22
+peak GPU mem: 0.1 GB
+
+Eval
+loss:1.9975+-1.8021
+Train step 150
+loss: 1.5797
+time per kstep: 213
+peak GPU mem: 0.1 GB
+
+Train step 200
+loss: 1.5095
+time per kstep: 40
+peak GPU mem: 0.1 GB
+
+Eval
+loss:1.3080+-0.6629
+Skipped steps: 0
+Test
+loss:1.4705+-0.8462
+Train step 50
+loss: 1.8977
+time per kstep: 82
+peak GPU mem: 0.1 GB
+
+Train step 100
+loss: 1.8702
+time per kstep: 25
+peak GPU mem: 0.1 GB
+
+Eval
+loss:2.1861+-2.3665
+
+Train step 150
+loss: 1.6065
+time per kstep: 172
+peak GPU mem: 0.1 GB
+
+Train step 200
+loss: 1.5272
+time per kstep: 24
+peak GPU mem: 0.1 GB
+
+Eval
+loss:1.4907+-1.1387
+
+Train step 50
+loss: 2.0468
+time per kstep: 82
+peak GPU mem: 0.1 GB
+
+Train step 100
+loss: 1.8759
+time per kstep: 21
+peak GPU mem: 0.1 GB
+
+Eval
+loss:2.1187+-2.1272
+
+Train step 150
+loss: 1.6300
+time per kstep: 165
+peak GPU mem: 0.1 GB
+
+Train step 200
+loss: 1.4955
+time per kstep: 23
+peak GPU mem: 0.1 GB
+
+Eval
+loss:1.4329+-0.8529
+
+Skipped steps: 0
+Test
+loss:1.5895+-0.9426

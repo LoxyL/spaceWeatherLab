@@ -74,6 +74,28 @@ class Logger:
             self.time = time.time()
             self.loss_accum = 0
     
+    def test_gen(self, x0s, out:list, idx):
+        x0s = x0s.copy()
+        plt.style.use('seaborn')
+        t = np.arange(x0s.shape[1])
+        t_res = np.arange(idx+1, x0s.shape[1])
+        for b in range(x0s.shape[0]):
+            fig,axs = plt.subplots(ncols=1,nrows=3,sharex=True,figsize=(16, 12),squeeze=True)
+
+            plot_dim = [0, 4, 7]
+
+            for dim, ax in zip(plot_dim,axs):
+                ax.plot(t, x0s[b, :, dim], linewidth=5, color='#2E86C1')
+                for res in out:
+                    ax.plot(t_res, res[b, idx:, dim], linewidth=5, color="#EB38CA",alpha=1/len(out))
+            
+            # Add tight layout and save
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.log_root, f"gen{b}.png"), 
+                        dpi=100, 
+                        bbox_inches='tight')
+            plt.close()
+    
     def train_end(self):
         self.log_text(f"Skipped steps: {self.skip_step}","train_log")
         # Create figure with improved style
