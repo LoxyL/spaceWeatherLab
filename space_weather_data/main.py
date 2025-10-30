@@ -99,7 +99,20 @@ class SpaceWeatherDataTool:
                     print("\nError: --dataset is required for cdaweb source.")
                     return False
                 # Parameters are passed directly to the fetcher for CDAWeb
-                df = fetcher.fetch_cdaweb(dataset, start_dt, end_dt, params_to_fetch)
+                df = fetcher.fetch_cdaweb(dataset, start_dt, end_dt, params_to_fetch, datatype=kwargs.get('cdaweb_datatype'))
+                # If specific parameters were not found, automatically list exact variables
+                try:
+                    requested = list(params_to_fetch or [])
+                    present_cols = list(df.columns) if (df is not None and not df.empty) else []
+                    missing = [p for p in requested if p not in present_cols]
+                    if missing:
+                        print(f"\n[INFO] The following requested parameter(s) were not found: {', '.join(missing)}")
+                        print("[INFO] Listing exact available variables/columns for your dataset/time:")
+                        # Use a supported time format for listing: prefer single-day if possible
+                        time_str = start_dt.strftime('%Y-%m-%d') if start_dt == end_dt else start_dt.strftime('%Y-%m') if (start_dt.day == 1 and end_dt.month == start_dt.month and end_dt.year == start_dt.year) else start_dt.strftime('%Y-%m-%d')
+                        self.list_cdaweb_variables(dataset=dataset, time_input=time_str)
+                except Exception:
+                    pass
             
             elif source == 'goes':
                 probe = kwargs.get('probe')
@@ -218,6 +231,44 @@ class SpaceWeatherDataTool:
         print(f"\nDefault OMNI: {', '.join(DEFAULT_PARAMETERS)}")
         print("\nFor CDAWeb, parameters are dataset-specific. Please consult CDAWeb documentation.")
 
+    def list_cdaweb_variables(self, dataset: str, time_input: str):
+        """List exact CDAWeb variable names and usable column names for the given dataset/time."""
+        from data_fetcher import DataFetcher  # reuse processing utilities
+        try:
+            start_dt, end_dt = self.time_parser.parse(time_input)
+        except ValueError as e:
+            print(f"\nError: {e}")
+            return
+
+        try:
+            fetcher = DataFetcher()
+            load_function = fetcher.cdaweb_function_mapping.get(dataset)
+            if not load_function:
+                print(f"\nError: Unsupported dataset '{dataset}'.")
+                return
+            time_range = [start_dt.strftime('%Y-%m-%d %H:%M:%S'), end_dt.strftime('%Y-%m-%d %H:%M:%S')]
+            loaded_vars = load_function(trange=time_range)
+            if not loaded_vars:
+                print("\n[INFO] No variables found for the specified range.")
+                return
+
+            base_vars = sorted(list(set(loaded_vars)))
+            print("\nExact CDAWeb variable names (pyspedas/tplot):")
+            for v in base_vars:
+                print(f"  - {v}")
+
+            df = fetcher._process_pyspedas_data(loaded_vars)
+            if df is not None and not df.empty:
+                usable_cols = [c for c in df.columns if c != 'Time']
+                if usable_cols:
+                    print("\nUsable column names (can be passed directly via -p):")
+                    for c in usable_cols:
+                        print(f"  - {c}")
+            else:
+                print("\n[INFO] Could not derive column-level names for the specified range.")
+        except Exception as e:
+            print(f"\nError while listing variables: {e}")
+
     def _save_data(self, df: pd.DataFrame, start_dt: datetime, end_dt: datetime, 
                    source: str, resolution: str, params_to_fetch: List[str], 
                    overwrite: bool, **kwargs):
@@ -309,6 +360,11 @@ Examples:
     )
     
     parser.add_argument(
+        '--cdaweb-datatype',
+        help='CDAWeb dataset datatype (e.g., h0, h3 for ACE/Wind MFI)'
+    )
+    
+    parser.add_argument(
         '-r', '--resolution',
         default='hourly',
         choices=['1min', '5min', 'hourly'],
@@ -339,6 +395,12 @@ Examples:
     )
     
     parser.add_argument(
+        '--list-vars',
+        action='store_true',
+        help='For CDAWeb: list exact available variable names for the given dataset and time range'
+    )
+    
+    parser.add_argument(
         '--plot',
         action='store_true',
         help='Plot data'
@@ -361,6 +423,19 @@ Examples:
         tool.show_available_parameters()
         return
     
+    if args.list_vars:
+        if args.source != 'cdaweb':
+            print("\nError: --list-vars currently supports only --source cdaweb.")
+            return
+        if not args.dataset:
+            print("\nError: --dataset is required when using --list-vars for cdaweb.")
+            return
+        if not args.time:
+            parser.print_help()
+            return
+        tool.list_cdaweb_variables(dataset=args.dataset, time_input=args.time)
+        return
+    
     if not args.time:
         parser.print_help()
         return
@@ -375,6 +450,7 @@ Examples:
         plot=args.plot,
         plot_file=args.plot_file,
         dataset=args.dataset,
+        cdaweb_datatype=args.cdaweb_datatype,
         probe=args.probe,
         instrument=args.instrument,
         datatype=args.datatype

@@ -93,7 +93,11 @@ class DataManager:
             dataset = kwargs.get('dataset')
             if not dataset:
                 raise ValueError("Dataset must be provided for cdaweb source")
-            base_name = f"space_weather_{source}_{dataset}_{time_label}"
+            cdaweb_datatype = kwargs.get('cdaweb_datatype')
+            if cdaweb_datatype:
+                base_name = f"space_weather_{source}_{dataset}_{cdaweb_datatype}_{time_label}"
+            else:
+                base_name = f"space_weather_{source}_{dataset}_{time_label}"
         elif source == 'goes':
             probe = kwargs.get('probe')
             instrument = kwargs.get('instrument')

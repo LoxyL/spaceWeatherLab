@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import tempfile
 from typing import Optional
+import re
 import datetime as dt
 
 try:
@@ -180,7 +181,7 @@ class DataFetcher:
             print(f"Failed to download OMNI data using pyspedas: {e}")
             return pd.DataFrame()
 
-    def fetch_cdaweb(self, dataset: str, start_dt: datetime, end_dt: datetime, parameters: List[str]) -> pd.DataFrame:
+    def fetch_cdaweb(self, dataset: str, start_dt: datetime, end_dt: datetime, parameters: List[str], datatype: Optional[str] = None) -> pd.DataFrame:
         """Fetch a specific CDAWeb dataset, translating standard parameter names."""
         print(f"\nFetching CDAWeb data (via pyspedas)...")
         print(f"Dataset: {dataset}")
@@ -201,7 +202,19 @@ class DataFetcher:
                 pyspedas_vars_to_load.add(pyspedas_var)
                 component_params[p] = (pyspedas_var, index)
             else:
-                # If param is not in our map, assume it's a direct variable name
+                # If param is not in our map, check if it's a component-style name like BGSEc_0
+                m = re.match(r"^([A-Za-z][A-Za-z0-9_]*)_(\d)$", p)
+                if m:
+                    base_var = m.group(1)
+                    try:
+                        comp_idx = int(m.group(2))
+                    except ValueError:
+                        comp_idx = None
+                    if comp_idx is not None:
+                        pyspedas_vars_to_load.add(base_var)
+                        component_params[p] = (base_var, comp_idx)
+                        continue
+                # Otherwise, assume it's a direct variable name
                 pyspedas_vars_to_load.add(p)
 
         if not pyspedas_vars_to_load:
@@ -211,8 +224,14 @@ class DataFetcher:
 
         time_range = [start_dt.strftime('%Y-%m-%d %H:%M:%S'), end_dt.strftime('%Y-%m-%d %H:%M:%S')]
 
+        # Determine datatype if provided or infer from dataset name
+        inferred_datatype = datatype or self._infer_cdaweb_datatype(dataset)
+
         try:
-            loaded_vars = load_function(trange=time_range, varnames=list(pyspedas_vars_to_load))
+            kwargs = { 'trange': time_range, 'varnames': list(pyspedas_vars_to_load) }
+            if inferred_datatype:
+                kwargs['datatype'] = inferred_datatype
+            loaded_vars = load_function(**kwargs)
             df_raw = self._process_pyspedas_data(loaded_vars)
 
             if df_raw.empty:
@@ -239,6 +258,17 @@ class DataFetcher:
         except Exception as e:
             print(f"Failed to download CDAWeb data for dataset '{dataset}': {e}")
             return pd.DataFrame()
+
+    def _infer_cdaweb_datatype(self, dataset: str) -> Optional[str]:
+        """Infer CDAWeb datatype from dataset name, e.g., AC_H0_MFI -> 'h0'."""
+        name = (dataset or '').upper()
+        if '_H0_' in name:
+            return 'h0'
+        if '_H1_' in name:
+            return 'h1'
+        if '_H3_' in name:
+            return 'h3'
+        return None
 
     def fetch_goes(self, probe: str, start_dt: datetime, end_dt: datetime, instrument: str, datatype: str, requested_params: List[str]) -> pd.DataFrame:
         """Fetch GOES data, handling parameter name mapping internally."""
