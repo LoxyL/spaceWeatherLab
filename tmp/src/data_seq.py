@@ -6,53 +6,99 @@ from torch.utils.data import Dataset, DataLoader
 
 def load_mat_file(root):
     data=dict()
-    with h5py.File(os.path.join(root,"ACE_2012.mat"),"r") as f:
-        for key in f.keys():
-            data[key]=np.asarray(f[key]).transpose()
-    with h5py.File(os.path.join(root,"OMNI_2012.mat"),"r") as f:
-        for key in f.keys():
-            data[key]=np.asarray(f[key]).transpose()
+    files:list[str] = os.listdir(root)
+    for fp in files:
+        if fp.endswith("2000s.mat"):
+            with h5py.File(os.path.join(root,fp),"r") as f:
+                for key in f.keys():
+                    data[key]=np.asarray(f[key][0])
+    for fp in files:
+        if fp.endswith("2010s.mat"):
+            with h5py.File(os.path.join(root,fp),"r") as f:
+                for key in f.keys():
+                    data[key]=np.concatenate(data[key],np.asarray(f[key][0]))
     return data
 
+def sigmoid(x):
+    return 1/(1+np.exp(-x))
+
+def sl1p(x):
+    return np.log1p(np.abs(x))*np.sign(x)
+
 def preprocess_data(data:dict):
-    key = 'ACE_Bz_2012'
-    arr = data[key]
-    arr[arr<-1e3]=0.0
-    arr /= 3.735161
-    data[key] = arr.astype(np.float32)
-
-    key='ACE_Psw_2012'
-    arr = data[key]
-    arr /= 3148
-    data[key] = arr.astype(np.float32)
-
-    key='ACE_Vsw_2012'
-    arr = data[key]
-    arr = (arr - 383)/341
-    data[key] = arr.astype(np.float32)
-
-    key='OMNI_AE_2012'
-    arr = data[key]
-    arr = (arr - 177)/212
-    data[key] = arr.astype(np.float32)
-
-    key='OMNI_ASYMH_2012'
-    arr = data[key]
-    arr = (arr - 19) / 14 #
-    data[key] = arr.astype(np.float32)
+    # using 2000-2009 data for normalization
     
-    key='OMNI_PC_2012'
+    key = 'ACE_Bx'
     arr = data[key]
-    arr[arr>100]=1.0
-    arr = (arr - 1) / 1.465 #
-    data[key] = arr.astype(np.float32)
+    mask = np.isnan(arr)
+    arr = (sigmoid(arr/3.92) - 0.5) * 5
+    arr[mask] = 0.0
+    data[key] = (mask, arr.astype(np.float32))
 
-    key='OMNI_SYMH_2012'
+    key = 'ACE_By'
     arr = data[key]
-    arr = (arr + 11) / 18.755921 
-    data[key] = arr.astype(np.float32)
+    mask = np.isnan(arr)
+    arr = (sigmoid(arr/4.3) - 0.5) * 5
+    arr[mask] = 0.0
+    data[key] = (mask, arr.astype(np.float32))
+
+    key = 'ACE_Bz'
+    arr = data[key]
+    mask = np.isnan(arr)
+    arr = sl1p(arr/3.66) / 0.57
+    arr[mask] = 0.0
+    data[key] = (mask, arr.astype(np.float32))
+
+    key = 'ACE_Psw'
+    arr = data[key]
+    arr[arr<1e-3]=np.nan
+    mask = np.isnan(arr)
+    arr = (np.log(arr/5) + 0.1) / 0.67  ##
+    arr[mask] = 0.0
+    data[key] = (mask, arr.astype(np.float32))
+
+    key = 'ACE_Vsw'
+    arr = data[key]
+    arr[arr<1] = np.nan
+    mask = np.isnan(arr)
+    arr = (np.log(arr/110) - 1.37) / 0.238  ##
+    arr[mask] = 0.0
+    data[key] = (mask, arr.astype(np.float32))
+
+    key = 'OMNI_AE'
+    arr = data[key]
+    arr[arr<0.9] = np.nan
+    mask = np.isnan(arr)
+    arr = (np.log(arr/220) + 0.75) / 1.15  ##
+    arr[mask] = 0.0
+    data[key] = (mask, arr.astype(np.float32))
+
+    key = 'OMNI_ASYMH'
+    arr = data[key]
+    arr[arr<0.0] = np.nan
+    mask = np.isnan(arr)
+    arr = (np.log1p(arr*2) - 3.55) / 0.63  ##
+    arr[mask] = 0.0
+    data[key] = (mask, arr.astype(np.float32))
+
+    key = 'OMNI_PC'
+    arr = data[key]
+    arr[arr>100] = np.nan
+    mask = np.isnan(arr)
+    arr = sl1p((data-1)/1.41) / 0.6  ##
+    arr[mask] = 0.0
+    data[key] = (mask, arr.astype(np.float32))
+
+    key = 'OMNI_SYMH'
+    arr = data[key]
+    mask = np.isnan(arr)
+    arr = (sl1p((data+13.2)/22) - 0.047)/ 0.525  ##
+    arr[mask] = 0.0
+    data[key] = (mask, arr.astype(np.float32))
 
     print("Using data:",*data.keys())
+
+    raise NotImplementedError
 
     data_array = [torch.from_numpy(data[key]).float() for key in data.keys()]
     data_array = torch.cat(data_array,dim=1)
