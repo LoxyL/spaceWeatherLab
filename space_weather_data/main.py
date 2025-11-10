@@ -18,7 +18,7 @@ from data_fetcher import DataFetcher
 from param_mapper import ParameterMapper
 from data_manager import DataManager
 from plotter import SpaceWeatherPlotter
-from derived_indices import compute_fp_qi
+# from derived_indices import compute_fp_qi
 
 
 class SpaceWeatherDataTool:

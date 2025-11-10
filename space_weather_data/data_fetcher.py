@@ -196,11 +196,24 @@ class DataFetcher:
         component_params = {} # Maps user_param -> (pyspedas_var, index)
         dataset_map = CDAWEB_PARAM_MAPPING.get(dataset, {})
 
+        # Allow BGSE/BGSEc to be interchangeable component bases
+        def alt_component_bases(base_name: str) -> List[str]:
+            if base_name == 'BGSE':
+                return ['BGSE', 'BGSEc']
+            if base_name == 'BGSEc':
+                return ['BGSEc', 'BGSE']
+            return [base_name]
+
+        # Build component mapping allowing multiple candidate bases per user param
+        component_params_multi: dict = {}  # user_param -> List[(base_var, index)]
+
         for p in parameters:
             if p in dataset_map:
-                pyspedas_var, index = dataset_map[p]
-                pyspedas_vars_to_load.add(pyspedas_var)
-                component_params[p] = (pyspedas_var, index)
+                base_var, index = dataset_map[p]
+                candidates = alt_component_bases(base_var)
+                for cand in candidates:
+                    pyspedas_vars_to_load.add(cand)
+                component_params_multi[p] = [(cand, index) for cand in candidates]
             else:
                 # If param is not in our map, check if it's a component-style name like BGSEc_0
                 m = re.match(r"^([A-Za-z][A-Za-z0-9_]*)_(\d)$", p)
@@ -211,8 +224,10 @@ class DataFetcher:
                     except ValueError:
                         comp_idx = None
                     if comp_idx is not None:
-                        pyspedas_vars_to_load.add(base_var)
-                        component_params[p] = (base_var, comp_idx)
+                        candidates = alt_component_bases(base_var)
+                        for cand in candidates:
+                            pyspedas_vars_to_load.add(cand)
+                        component_params_multi[p] = [(cand, comp_idx) for cand in candidates]
                         continue
                 # Otherwise, assume it's a direct variable name
                 pyspedas_vars_to_load.add(p)
@@ -242,14 +257,23 @@ class DataFetcher:
             final_df = pd.DataFrame()
             final_df['Time'] = df_raw['Time']
 
-            for user_param, (pyspedas_var, index) in component_params.items():
-                pyspedas_col_name = f"{pyspedas_var}_{index}"
-                if pyspedas_col_name in df_raw.columns:
-                    final_df[user_param] = df_raw[pyspedas_col_name]
+            # Resolve user-requested component from multiple candidate bases (BGSE/BGSEc)
+            for user_param, candidates in component_params_multi.items():
+                found = False
+                for base_var, index in candidates:
+                    pyspedas_col_name = f"{base_var}_{index}"
+                    if pyspedas_col_name in df_raw.columns:
+                        final_df[user_param] = df_raw[pyspedas_col_name]
+                        found = True
+                        break
+                if not found:
+                    # If no component match, try direct column (in case already flattened)
+                    if user_param in df_raw.columns:
+                        final_df[user_param] = df_raw[user_param]
             
             # Include any parameters that were passed directly and not mapped
             for p in parameters:
-                if p not in component_params and p in df_raw.columns:
+                if p not in component_params_multi and p in df_raw.columns:
                     final_df[p] = df_raw[p]
             # --- End Post-processing ---
 
