@@ -26,6 +26,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="输出MSE曲线图")
     parser.add_argument("--show", action="store_true", help="显示MSE曲线窗口")
     parser.add_argument("--verbose", action="store_true", help="输出详细诊断信息")
+    parser.add_argument("--overwrite", action="store_true", help="强制重新下载远端数据（忽略本地CDF缓存）")
     args = parser.parse_args(argv)
 
     try:
@@ -34,7 +35,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             pkg_dir=args.pkg_dir, dataset=args.dataset,
             cdaweb_datatype=args.cdaweb_datatype, omni_resolution=args.omni_resolution
         )
-        data = comparator.fetch(args.time)
+        data = comparator.fetch(args.time, overwrite=args.overwrite)
         omni = data["omni"]
         cda = data["cda"]
         if omni.empty or cda.empty:

@@ -10,6 +10,7 @@ import matplotlib as mpl
 from matplotlib.dates import DateFormatter, AutoDateLocator
 
 import sys
+import datetime as dt
 
 
 def _set_times_font():
@@ -246,7 +247,144 @@ class SourceComparatorUsingPkg:
         if str(pkg_dir) not in sys.path:
             sys.path.insert(0, str(pkg_dir))
 
-    def fetch(self, time_str: str) -> Dict[str, pd.DataFrame]:
+    def _is_single_day(self, start_dt: pd.Timestamp, end_dt: pd.Timestamp) -> bool:
+        try:
+            return pd.to_datetime(start_dt).date() == pd.to_datetime(end_dt).date()
+        except Exception:
+            return False
+
+    def _find_local_omni_file(self, day: pd.Timestamp) -> Optional[Path]:
+        """
+        寻找 OMNI 1min 单日 CDF：
+        - OMNI 的 1min 文件按“月”归档，文件名用该月第一天 YYYYMM01
+        - 先在 time_delay_analyze 下找：omni_data/hro_1min/YYYY/omni_hro_1min_YYYYMM01_v*.cdf
+        - 再在 space_weather_data 下找：同结构
+        """
+        day = pd.to_datetime(day)
+        yyyy = day.strftime("%Y")
+        ymd_first = day.strftime("%Y%m") + "01"
+        patterns = [
+            f"omni_data/hro_1min/{yyyy}/omni_hro_1min_{ymd_first}_v*.cdf",
+        ]
+        base_dirs: List[Path] = [
+            Path(__file__).resolve().parent,           # time_delay_analyze/...
+            self.pkg_dir.resolve(),                    # space_weather_data/...
+        ]
+        for base in base_dirs:
+            for pat in patterns:
+                candidates = sorted(base.glob(pat))
+                if candidates:
+                    return candidates[-1]
+        return None
+
+    def _find_local_cda_file(self, day: pd.Timestamp) -> Optional[Path]:
+        """
+        寻找 CDA 单日 CDF，按 dataset 推断路径与文件名前缀：
+        - AC_H0_MFI: ace_data/mag/level_2_cdaweb/mfi_h0/YYYY/ac_h0_mfi_YYYYMMDD_v*.cdf
+        - AC_H3_MFI: ace_data/mag/level_2_cdaweb/mfi_h3/YYYY/ac_h3_mfi_YYYYMMDD_v*.cdf
+        - WI_H0_MFI: wind_data/mfi/mfi_h0/YYYY/wi_h0_mfi_YYYYMMDD_v*.cdf
+        """
+        dataset = (self.dataset or "").upper()
+        yyyy = pd.to_datetime(day).strftime("%Y")
+        ymd = pd.to_datetime(day).strftime("%Y%m%d")
+        patterns: List[str] = []
+        if dataset == "AC_H0_MFI":
+            patterns.append(f"ace_data/mag/level_2_cdaweb/mfi_h0/{yyyy}/ac_h0_mfi_{ymd}_v*.cdf")
+        elif dataset == "AC_H3_MFI":
+            patterns.append(f"ace_data/mag/level_2_cdaweb/mfi_h3/{yyyy}/ac_h3_mfi_{ymd}_v*.cdf")
+        elif dataset == "WI_H0_MFI":
+            patterns.append(f"wind_data/mfi/mfi_h0/{yyyy}/wi_h0_mfi_{ymd}_v*.cdf")
+        else:
+            # 未知数据集：不做本地查找
+            return None
+        base_dirs: List[Path] = [
+            Path(__file__).resolve().parent,   # time_delay_analyze/...
+            self.pkg_dir.resolve(),            # space_weather_data/...
+        ]
+        for base in base_dirs:
+            for pat in patterns:
+                candidates = sorted(base.glob(pat))
+                if candidates:
+                    return candidates[-1]
+        return None
+
+    def _load_omni_from_local(self, local_file: Path, start_dt: pd.Timestamp, end_dt: pd.Timestamp) -> pd.DataFrame:
+        """
+        使用本地 OMNI CDF 文件加载到 DataFrame，列名标准化为 ['Time','Bx','By_GSE','Bz_GSE']（若存在）。
+        """
+        self._add_pkg_path()
+        from data_fetcher import DataFetcher  # 复用内部 DataFrame 构建逻辑
+        try:
+            import pyspedas
+            from pytplot import del_data
+        except Exception as e:
+            print(f"[WARN] 本地加载 OMNI 失败（缺少依赖）：{e}")
+            return pd.DataFrame()
+        del_data('*')
+        try:
+            # 使用 cdf_to_tplot 直接从本地 CDF 生成 tplot 变量，避免远端索引
+            loaded_vars = pyspedas.cdf_to_tplot([str(local_file)])
+            fetcher = DataFetcher(resolution=self.omni_resolution)
+            df = fetcher._process_pyspedas_data(loaded_vars, standardize_omni=True)
+            if df.empty:
+                return df
+            # 仅保留需要列
+            keep_omni = ["Time", "Bx", "By_GSE", "Bz_GSE"]
+            df = df[[c for c in keep_omni if c in df.columns]].copy()
+            # 按请求时间段截取（稳妥起见）
+            t0 = pd.to_datetime(start_dt)
+            t1 = pd.to_datetime(end_dt)
+            if "Time" in df.columns:
+                df = df[(df["Time"] >= t0) & (df["Time"] <= t1)]
+            return df.reset_index(drop=True)
+        except Exception as e:
+            print(f"[WARN] 本地 OMNI 解析失败：{e}")
+            return pd.DataFrame()
+
+    def _load_cda_from_local(self, local_file: Path, start_dt: pd.Timestamp, end_dt: pd.Timestamp) -> pd.DataFrame:
+        """
+        使用本地 CDA CDF 文件加载到 DataFrame，输出列包含 ['Time','BX_GSE','BY_GSE','BZ_GSE']（若数据存在）。
+        同时兼容 BGSE / BGSEc 分量命名。
+        """
+        self._add_pkg_path()
+        from data_fetcher import DataFetcher
+        try:
+            import pyspedas
+            from pytplot import del_data
+        except Exception as e:
+            print(f"[WARN] 本地加载 CDA 失败（缺少依赖）：{e}")
+            return pd.DataFrame()
+        del_data('*')
+        try:
+            # 直接从本地 CDF 读入，避免远端索引
+            loaded_vars = pyspedas.cdf_to_tplot([str(local_file)])
+            fetcher = DataFetcher(resolution=self.omni_resolution)
+            df_raw = fetcher._process_pyspedas_data(loaded_vars)
+            if df_raw.empty:
+                return df_raw
+            # 后处理：从 BGSE/BGSEc 组件中构建标准列
+            out = pd.DataFrame()
+            out["Time"] = df_raw["Time"]
+            for idx, name in enumerate(["BX_GSE", "BY_GSE", "BZ_GSE"]):
+                for base in ["BGSE", "BGSEc"]:
+                    col = f"{base}_{idx}"
+                    if col in df_raw.columns:
+                        out[name] = df_raw[col]
+                        break
+            # 截取请求时间段
+            t0 = pd.to_datetime(start_dt)
+            t1 = pd.to_datetime(end_dt)
+            out = out[(out["Time"] >= t0) & (out["Time"] <= t1)].reset_index(drop=True)
+            # 若三列均缺失，返回空
+            any_comp = any(c in out.columns for c in ["BX_GSE", "BY_GSE", "BZ_GSE"])
+            if not any_comp:
+                return pd.DataFrame()
+            return out
+        except Exception as e:
+            print(f"[WARN] 本地 CDA 解析失败：{e}")
+            return pd.DataFrame()
+
+    def fetch(self, time_str: str, overwrite: bool = False) -> Dict[str, pd.DataFrame]:
         self._add_pkg_path()
         from time_parser import TimeParser
         from data_fetcher import DataFetcher
@@ -255,17 +393,39 @@ class SourceComparatorUsingPkg:
         start_dt, end_dt = parser.parse(time_str)
         fetcher = DataFetcher(resolution=self.omni_resolution)
 
-        df_omni = fetcher.fetch_omni(start_dt, end_dt)
-        keep_omni = ["Time", "Bx", "By_GSE", "Bz_GSE"]
-        df_omni = df_omni[[c for c in keep_omni if c in df_omni.columns]].copy()
+        # 单日且未指定覆盖时，优先尝试本地 CDF；两来源独立判断
+        single_day = self._is_single_day(start_dt, end_dt)
+        df_omni: pd.DataFrame
+        df_cda: pd.DataFrame
 
+        # OMNI
+        df_omni = pd.DataFrame()
+        if single_day and not overwrite:
+            local_omni = self._find_local_omni_file(start_dt)
+            if local_omni and local_omni.exists():
+                print(f"[LOCAL] 使用本地 OMNI CDF: {local_omni}")
+                df_omni = self._load_omni_from_local(local_omni, start_dt, end_dt)
+        if df_omni.empty:
+            # 远端获取
+            df_omni = fetcher.fetch_omni(start_dt, end_dt)
+            keep_omni = ["Time", "Bx", "By_GSE", "Bz_GSE"]
+            df_omni = df_omni[[c for c in keep_omni if c in df_omni.columns]].copy()
+
+        # CDA
         cda_params = ["BX_GSE", "BY_GSE", "BZ_GSE"]
-        df_cda = fetcher.fetch_cdaweb(self.dataset, start_dt, end_dt, cda_params, datatype=self.cdaweb_datatype)
-        df_cda = df_cda[[c for c in ["Time"] + cda_params if c in df_cda.columns]].copy()
+        df_cda = pd.DataFrame()
+        if single_day and not overwrite:
+            local_cda = self._find_local_cda_file(start_dt)
+            if local_cda and local_cda.exists():
+                print(f"[LOCAL] 使用本地 CDA CDF: {local_cda}")
+                df_cda = self._load_cda_from_local(local_cda, start_dt, end_dt)
+        if df_cda.empty:
+            df_cda = fetcher.fetch_cdaweb(self.dataset, start_dt, end_dt, cda_params, datatype=self.cdaweb_datatype)
+            df_cda = df_cda[[c for c in ["Time"] + cda_params if c in df_cda.columns]].copy()
         return {"omni": df_omni, "cda": df_cda}
 
-    def plot(self, time_str: str, output: Path, show: bool = False, lag_minutes: int = 0) -> None:
-        data = self.fetch(time_str)
+    def plot(self, time_str: str, output: Path, show: bool = False, lag_minutes: int = 0, overwrite: bool = False) -> None:
+        data = self.fetch(time_str, overwrite=overwrite)
         omni = data["omni"]
         cda = data["cda"]
 
