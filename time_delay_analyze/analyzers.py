@@ -328,8 +328,8 @@ class SourceComparatorUsingPkg:
             df = fetcher._process_pyspedas_data(loaded_vars, standardize_omni=True)
             if df.empty:
                 return df
-            # 仅保留需要列
-            keep_omni = ["Time", "Bx", "By_GSE", "Bz_GSE"]
+            # 仅保留需要列（加入速度列 Vsw，如存在）
+            keep_omni = ["Time", "Bx", "By_GSE", "Bz_GSE", "Vsw"]
             df = df[[c for c in keep_omni if c in df.columns]].copy()
             # 按请求时间段截取（稳妥起见）
             t0 = pd.to_datetime(start_dt)
@@ -384,7 +384,7 @@ class SourceComparatorUsingPkg:
             print(f"[WARN] 本地 CDA 解析失败：{e}")
             return pd.DataFrame()
 
-    def fetch(self, time_str: str, overwrite: bool = False) -> Dict[str, pd.DataFrame]:
+    def fetch(self, time_str: str, overwrite: bool = False, speed_only: bool = False) -> Dict[str, pd.DataFrame]:
         self._add_pkg_path()
         from time_parser import TimeParser
         from data_fetcher import DataFetcher
@@ -411,8 +411,23 @@ class SourceComparatorUsingPkg:
             keep_omni = ["Time", "Bx", "By_GSE", "Bz_GSE"]
             df_omni = df_omni[[c for c in keep_omni if c in df_omni.columns]].copy()
 
-        # CDA
+        # CDA 参数：
+        # - speed_only 模式：仅请求速度列（SWE: Vp；若非 SWE，尝试通用速度向量 V_* 或仅保留空）
+        # - 否则：磁场三分量 +（若为 SWE）附加 Vp
         cda_params = ["BX_GSE", "BY_GSE", "BZ_GSE"]
+        ds_upper = (self.dataset or "").upper()
+        if speed_only:
+            if "SWE" in ds_upper:
+                cda_params = ["Vp"]
+            else:
+                # 非 SWE 速度数据集可扩展；默认尝试常见速度向量名（可能为空）
+                cda_params = ["Vp", "V_GSE", "V_GSM", "V_RTN"]
+        else:
+            try:
+                if "SWE" in ds_upper:
+                    cda_params = cda_params + ["Vp"]
+            except Exception:
+                pass
         df_cda = pd.DataFrame()
         if single_day and not overwrite:
             local_cda = self._find_local_cda_file(start_dt)
