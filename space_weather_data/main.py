@@ -231,8 +231,11 @@ class SpaceWeatherDataTool:
         print(f"\nDefault OMNI: {', '.join(DEFAULT_PARAMETERS)}")
         print("\nFor CDAWeb, parameters are dataset-specific. Please consult CDAWeb documentation.")
 
-    def list_cdaweb_variables(self, dataset: str, time_input: str):
-        """List exact CDAWeb variable names and usable column names for the given dataset/time."""
+    def list_cdaweb_variables(self, dataset: str, time_input: str, cdaweb_datatype: str = None):
+        """List exact CDAWeb variable names and usable column names for the given dataset/time.
+        
+        For MMS FPI, pass cdaweb_datatype like 'des-moms' or 'dis-moms' to see variables.
+        """
         from data_fetcher import DataFetcher  # reuse processing utilities
         try:
             start_dt, end_dt = self.time_parser.parse(time_input)
@@ -247,17 +250,24 @@ class SpaceWeatherDataTool:
                 print(f"\nError: Unsupported dataset '{dataset}'.")
                 return
             time_range = [start_dt.strftime('%Y-%m-%d %H:%M:%S'), end_dt.strftime('%Y-%m-%d %H:%M:%S')]
-            loaded_vars = load_function(trange=time_range)
+            # Pass datatype when provided (needed for MMS FPI to choose DES/DIS moms)
+            if cdaweb_datatype:
+                loaded_vars = load_function(trange=time_range, datatype=cdaweb_datatype)
+            else:
+                loaded_vars = load_function(trange=time_range)
             if not loaded_vars:
                 print("\n[INFO] No variables found for the specified range.")
                 return
 
-            base_vars = sorted(list(set(loaded_vars)))
+            # Some loaders may return non-string entries (e.g., numpy arrays). Keep only string names.
+            loaded_str = [v for v in (loaded_vars or []) if isinstance(v, str)]
+            base_vars = sorted(list(set(loaded_str)))
             print("\nExact CDAWeb variable names (pyspedas/tplot):")
             for v in base_vars:
                 print(f"  - {v}")
 
-            df = fetcher._process_pyspedas_data(loaded_vars)
+            # Build columns only from string variable names to avoid numpy errors
+            df = fetcher._process_pyspedas_data(loaded_str)
             if df is not None and not df.empty:
                 usable_cols = [c for c in df.columns if c != 'Time']
                 if usable_cols:
@@ -433,7 +443,7 @@ Examples:
         if not args.time:
             parser.print_help()
             return
-        tool.list_cdaweb_variables(dataset=args.dataset, time_input=args.time)
+        tool.list_cdaweb_variables(dataset=args.dataset, time_input=args.time, cdaweb_datatype=args.cdaweb_datatype)
         return
     
     if not args.time:

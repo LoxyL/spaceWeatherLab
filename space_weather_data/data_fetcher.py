@@ -85,6 +85,8 @@ class DataFetcher:
             'AC_H0_MFI': pyspedas.ace.mfi,      # Corrected from 'mag' to 'mfi'
             'AC_H1_SWE': pyspedas.ace.swe,      # Corrected from 'swepam' to 'swe'
             'MMS1_FGM_SRVY_L2': pyspedas.mms.fgm,
+            # MMS FPI survey level-2 (use --cdaweb-datatype to specify 'des-moms' or 'dis-moms')
+            'MMS1_FPI_SRVY_L2': pyspedas.mms.fpi,
         }
         self.goes_function_mapping = {
             'mag': pyspedas.goes.mag,
@@ -145,9 +147,29 @@ class DataFetcher:
         all_dfs = []
         for var in loaded_vars:
             var_data = get_data(var)
-            if var_data is None: continue
-            
-            df_var = pd.DataFrame(index=pd.to_datetime(var_data.times, unit='s'), data=var_data.y)
+            if var_data is None:
+                continue
+            # pytplot.get_data 可能返回不同结构：
+            # - namedtuple/obj: .times, .y
+            # - tuple/list: (times, y, *rest)
+            # - dict: keys 可能为 'x'/'times' 与 'y'/'data'
+            times = None
+            values = None
+            try:
+                if hasattr(var_data, 'times') and hasattr(var_data, 'y'):
+                    times = var_data.times
+                    values = var_data.y
+                elif isinstance(var_data, (tuple, list)) and len(var_data) >= 2:
+                    times = var_data[0]
+                    values = var_data[1]
+                elif isinstance(var_data, dict):
+                    times = var_data.get('times') or var_data.get('x')
+                    values = var_data.get('y') or var_data.get('data')
+            except Exception:
+                times, values = None, None
+            if times is None or values is None:
+                continue
+            df_var = pd.DataFrame(index=pd.to_datetime(times, unit='s'), data=values)
             
             if len(df_var.columns) > 1:
                 df_var.columns = [f"{var}_{i}" for i in range(len(df_var.columns))]
@@ -248,6 +270,16 @@ class DataFetcher:
                 kwargs['datatype'] = inferred_datatype
             loaded_vars = load_function(**kwargs)
             df_raw = self._process_pyspedas_data(loaded_vars)
+
+            # Fallback: some loaders (e.g., MMS) may return nothing when filtering by varnames.
+            # In that case, reload without varname filtering, then select columns afterwards.
+            if (df_raw is None or df_raw.empty) and kwargs.get('varnames'):
+                try:
+                    kwargs_nofilter = {k: v for k, v in kwargs.items() if k != 'varnames'}
+                    loaded_all = load_function(**kwargs_nofilter)
+                    df_raw = self._process_pyspedas_data(loaded_all)
+                except Exception:
+                    pass
 
             if df_raw.empty:
                 print(f"\n[INFO] pyspedas loaded the dataset but found no data for the requested variables.")
