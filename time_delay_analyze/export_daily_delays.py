@@ -91,18 +91,44 @@ def main(argv: Optional[List[str]] = None) -> int:
                                                      lag_min=-120, lag_max=120)
                     row[f"{omni_col}_lag"] = res.get("best_lag")
                     row[f"{omni_col}_mse"] = res.get("best_mse")
-                # 追加：保存 OMNI 日内平均 Vsw，并计算理论传播时延（近似 D/|V|）
+                # 追加：保存 OMNI 日内平均速度，并计算更合理的理论传播时延
                 try:
-                    D_EFF_KM = 1.5e6  # 近似 L1→BSN 有效距离（公里）
-                    if "Vsw" in omni.columns:
-                        vs = pd.to_numeric(omni["Vsw"], errors="coerce").dropna()
-                        if len(vs) > 0:
-                            mean_v = float(vs.mean())  # km/s
-                            row["Vsw_mean"] = mean_v
-                            row["theory_lag_min"] = float((D_EFF_KM / mean_v) / 60.0) if mean_v > 0 else np.nan
+                    # 选速度优先级：|Vx| > Vsw（单位 km/s）
+                    v_use = None
+                    if "Vx" in omni.columns:
+                        v_use = pd.to_numeric(omni["Vx"], errors="coerce").abs()
+                    elif "Vsw" in omni.columns:
+                        v_use = pd.to_numeric(omni["Vsw"], errors="coerce")
+                    # 密度 n [cm^-3]
+                    n_use = pd.to_numeric(omni["nsw"], errors="coerce") if "nsw" in omni.columns else None
+
+                    if v_use is not None and v_use.notna().any():
+                        # 速度太小/异常的剔除
+                        v = v_use.replace([np.inf, -np.inf], np.nan)
+                        v[v <= 50.0] = np.nan  # 过滤极小速度
+                        mean_v = float(np.nanmean(v))
+                        row["Vsw_mean"] = mean_v if np.isfinite(mean_v) else np.nan
+
+                        # 动压估计（若有 n）：Pdyn[nPa] = 1.6726e-6 * n[cm^-3] * V[km/s]^2
+                        if n_use is not None and n_use.notna().any():
+                            n = n_use.replace([np.inf, -np.inf], np.nan)
+                            Pdyn = 1.6726e-6 * n * (v**2)
+                            # 经验式弓激波鼻部距离（单位 Re）：~ 14 * Pdyn^(-1/6.6)，限制在 [12, 20] Re
+                            Rbsn_Re = 14.0 * (Pdyn ** (-1.0 / 6.6))
+                            Rbsn_Re = Rbsn_Re.clip(lower=12.0, upper=20.0)
+                            Rbsn_km = Rbsn_Re * 6371.0
                         else:
-                            row["Vsw_mean"] = np.nan
-                            row["theory_lag_min"] = np.nan
+                            # 无动压时，使用典型常数 15 Re
+                            Rbsn_km = pd.Series(15.0 * 6371.0, index=v.index)
+
+                        # L1 标称距离（km）
+                        D_L1_km = 1.5e6
+                        D_eff = D_L1_km - Rbsn_km
+                        # t[min] = D_eff / v / 60
+                        t_series = (D_eff / v) / 60.0
+                        # 稳健统计：取中位数
+                        t_theory = float(np.nanmedian(t_series))
+                        row["theory_lag_min"] = t_theory if np.isfinite(t_theory) else np.nan
                     else:
                         row["Vsw_mean"] = np.nan
                         row["theory_lag_min"] = np.nan

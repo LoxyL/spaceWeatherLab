@@ -328,8 +328,8 @@ class SourceComparatorUsingPkg:
             df = fetcher._process_pyspedas_data(loaded_vars, standardize_omni=True)
             if df.empty:
                 return df
-            # 仅保留需要列（加入速度列 Vsw，如存在）
-            keep_omni = ["Time", "Bx", "By_GSE", "Bz_GSE", "Vsw"]
+            # 仅保留需要列（加入速度/密度列，如存在）
+            keep_omni = ["Time", "Bx", "By_GSE", "Bz_GSE", "Vsw", "Vx", "nsw"]
             df = df[[c for c in keep_omni if c in df.columns]].copy()
             # 按请求时间段截取（稳妥起见）
             t0 = pd.to_datetime(start_dt)
@@ -408,7 +408,7 @@ class SourceComparatorUsingPkg:
         if df_omni.empty:
             # 远端获取
             df_omni = fetcher.fetch_omni(start_dt, end_dt)
-            keep_omni = ["Time", "Bx", "By_GSE", "Bz_GSE"]
+            keep_omni = ["Time", "Bx", "By_GSE", "Bz_GSE", "Vsw", "Vx", "nsw"]
             df_omni = df_omni[[c for c in keep_omni if c in df_omni.columns]].copy()
 
         # CDA 参数：
