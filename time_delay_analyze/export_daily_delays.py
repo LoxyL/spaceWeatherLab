@@ -77,7 +77,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                     empty_row.update({
                         "Bx_lag": np.nan, "By_GSE_lag": np.nan, "Bz_GSE_lag": np.nan,
                         "Bx_mse": np.nan, "By_GSE_mse": np.nan, "Bz_GSE_mse": np.nan,
-                        "Vsw_mean": np.nan, "theory_lag_min": np.nan,
+                        "Vsw_mean": np.nan,
+                        "theory_lag_speed": np.nan, "theory_lag_multi": np.nan, "theory_lag_min": np.nan,
                     })
                 if do_speed:
                     empty_row.update({"Vsw_lag": np.nan, "Vsw_mse": np.nan})
@@ -86,54 +87,68 @@ def main(argv: Optional[List[str]] = None) -> int:
 
             row = {"Date": day_str}
             if do_mag:
+                # Magnetic field components
                 for omni_col, cda_col in components:
                     res = analyzer.analyze_component(omni, cda, omni_col=omni_col, cda_col=cda_col,
                                                      lag_min=-120, lag_max=120)
                     row[f"{omni_col}_lag"] = res.get("best_lag")
                     row[f"{omni_col}_mse"] = res.get("best_mse")
-                # 追加：保存 OMNI 日内平均速度，并计算更合理的理论传播时延
+
+                # Append: save OMNI daily average speed and compute theoretical propagation lags
                 try:
-                    # 选速度优先级：|Vx| > Vsw（单位 km/s）
+                    # Choose speed priority: |Vx| > Vsw (km/s)
                     v_use = None
                     if "Vx" in omni.columns:
                         v_use = pd.to_numeric(omni["Vx"], errors="coerce").abs()
                     elif "Vsw" in omni.columns:
                         v_use = pd.to_numeric(omni["Vsw"], errors="coerce")
-                    # 密度 n [cm^-3]
+                    # Density n [cm^-3]
                     n_use = pd.to_numeric(omni["nsw"], errors="coerce") if "nsw" in omni.columns else None
 
                     if v_use is not None and v_use.notna().any():
-                        # 速度太小/异常的剔除
+                        # Filter out unrealistically low speeds
                         v = v_use.replace([np.inf, -np.inf], np.nan)
-                        v[v <= 50.0] = np.nan  # 过滤极小速度
+                        v[v <= 50.0] = np.nan
                         mean_v = float(np.nanmean(v))
                         row["Vsw_mean"] = mean_v if np.isfinite(mean_v) else np.nan
 
-                        # 动压估计（若有 n）：Pdyn[nPa] = 1.6726e-6 * n[cm^-3] * V[km/s]^2
+                        # --- Theory 1: simple D/|V| using L1 distance only ---
+                        D_L1_km = 1.5e6  # nominal L1 distance (km)
+                        t_simple_series = (D_L1_km / v) / 60.0  # minutes
+                        t_simple = float(np.nanmedian(t_simple_series))
+                        row["theory_lag_speed"] = t_simple if np.isfinite(t_simple) else np.nan
+
+                        # --- Theory 2: include dynamic pressure via BSN distance ---
+                        # Pdyn[nPa] = 1.6726e-6 * n[cm^-3] * V[km/s]^2
                         if n_use is not None and n_use.notna().any():
                             n = n_use.replace([np.inf, -np.inf], np.nan)
                             Pdyn = 1.6726e-6 * n * (v**2)
-                            # 经验式弓激波鼻部距离（单位 Re）：~ 14 * Pdyn^(-1/6.6)，限制在 [12, 20] Re
+                            # Empirical BSN distance (Re): ~ 14 * Pdyn^(-1/6.6), clipped to [12, 20] Re
                             Rbsn_Re = 14.0 * (Pdyn ** (-1.0 / 6.6))
                             Rbsn_Re = Rbsn_Re.clip(lower=12.0, upper=20.0)
                             Rbsn_km = Rbsn_Re * 6371.0
                         else:
-                            # 无动压时，使用典型常数 15 Re
+                            # No dynamic pressure: use typical 15 Re
                             Rbsn_km = pd.Series(15.0 * 6371.0, index=v.index)
 
-                        # L1 标称距离（km）
-                        D_L1_km = 1.5e6
                         D_eff = D_L1_km - Rbsn_km
                         # t[min] = D_eff / v / 60
                         t_series = (D_eff / v) / 60.0
-                        # 稳健统计：取中位数
+                        # robust statistic: median
                         t_theory = float(np.nanmedian(t_series))
-                        row["theory_lag_min"] = t_theory if np.isfinite(t_theory) else np.nan
+                        row["theory_lag_multi"] = t_theory if np.isfinite(t_theory) else np.nan
+
+                        # Backwards-compatible field: use multi-factor as main theory lag
+                        row["theory_lag_min"] = row["theory_lag_multi"]
                     else:
                         row["Vsw_mean"] = np.nan
+                        row["theory_lag_speed"] = np.nan
+                        row["theory_lag_multi"] = np.nan
                         row["theory_lag_min"] = np.nan
                 except Exception:
                     row["Vsw_mean"] = np.nan
+                    row["theory_lag_speed"] = np.nan
+                    row["theory_lag_multi"] = np.nan
                     row["theory_lag_min"] = np.nan
 
             # 可选：速度（仅当两侧列同时存在时计算）
@@ -173,7 +188,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 err_row.update({
                     "Bx_lag": np.nan, "By_GSE_lag": np.nan, "Bz_GSE_lag": np.nan,
                     "Bx_mse": np.nan, "By_GSE_mse": np.nan, "Bz_GSE_mse": np.nan,
-                    "Vsw_mean": np.nan, "theory_lag_min": np.nan,
+                    "Vsw_mean": np.nan,
+                    "theory_lag_speed": np.nan, "theory_lag_multi": np.nan, "theory_lag_min": np.nan,
                 })
             if do_speed:
                 err_row.update({"Vsw_lag": np.nan, "Vsw_mse": np.nan})

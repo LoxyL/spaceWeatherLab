@@ -147,54 +147,24 @@ def main(argv: Optional[List[str]] = None) -> int:
 	# 解析日期
 	x_all = pd.to_datetime(df['Date'])
 
-    # 折线图（3子图），横轴紧
+	# Daily lag line plots (3 subplots), tight x-axis (only actual lags)
 	try:
 		fig, axes = plt.subplots(nrows=3, ncols=1, figsize=(12, 9), sharex=True)
 		x = x_all
 		series = [("Bx_lag", "Bx delay (min)"), ("By_GSE_lag", "By (GSE) delay (min)"), ("Bz_GSE_lag", "Bz (GSE) delay (min)")]
 		for ax, (col, ylabel) in zip(axes, series):
 			y = pd.to_numeric(df.get(col, pd.Series([])), errors='coerce')
-			# 多文件模式：仅折线，无点标记；单文件保留小圆点
+			# multi-file mode: line only; single-file: line with markers
 			mk = None if is_multi else 'o'
 			ms = 0.0 if is_multi else 3.0
 			line_actual, = ax.plot(x, y, marker=mk, markersize=ms, linewidth=1.2, color='k', alpha=1.0, label='Actual')
-			legend_handles = [line_actual]
-			# 叠加理论延时（若开启并存在列）
-			if args.overlay_theory and ('theory_lag_min' in df.columns):
-				y_th = pd.to_numeric(df.get('theory_lag_min', pd.Series([])), errors='coerce')
-				line_theory, = ax.plot(x, y_th, linestyle=':', linewidth=0.9, color='k', alpha=1.0, label='Theoretical')
-				legend_handles.append(line_theory)
-				# 比值折线（右侧 y 轴）：ratio = theory / actual
-				line_ratio = None
-				try:
-					a = y.to_numpy(dtype=float)
-					b = y_th.to_numpy(dtype=float)
-					ratio = np.full_like(a, np.nan, dtype=float)
-					mask = np.isfinite(a) & np.isfinite(b) & (np.abs(a) > 1e-12)
-					ratio[mask] = b[mask] / a[mask]
-					ax_r = ax.twinx()
-					line_ratio, = ax_r.plot(x, ratio, linestyle='--', linewidth=0.9, color='0.4', alpha=1.0, label='Ratio (theory/actual)')
-					ax_r.tick_params(axis='y', colors='0.2')
-					# Fix ratio y-axis range
-					ax_r.set_ylim(0.3, 5.0)
-					# 右下角标注比值的均值与方差
-					if np.isfinite(ratio).any():
-						r_mean = float(np.nanmean(ratio))
-						r_var = float(np.nanvar(ratio))
-						ax.text(0.98, 0.02, f"Ratio mean={r_mean:.2f}\nVar={r_var:.2f}", transform=ax.transAxes,
-							ha='right', va='bottom', color='k')
-				except Exception:
-					line_ratio = None
 			ax.axhline(0.0, color='k', linestyle='--', linewidth=0.8, alpha=1.0)
 			ax.set_ylabel(ylabel, color='k')
 			ax.grid(True, linestyle='--', color='0.5', alpha=0.5)
 			# 统一 Y 轴范围为 -10 ~ 120
 			ax.set_ylim(-10.0, 120.0)
-			# 图例（右上角，包含比值曲线）
-			if args.overlay_theory and ('theory_lag_min' in df.columns) and ('line_ratio' in locals()) and (line_ratio is not None):
-				ax.legend(handles=legend_handles + [line_ratio], loc='upper right', frameon=False)
-			else:
-				ax.legend(handles=legend_handles, loc='upper right', frameon=False)
+			# Legend (top-right, only actual)
+			ax.legend(handles=[line_actual], loc='upper right', frameon=False)
 		axes[-1].set_xlabel("Date (UTC)", color='k')
 		tighten_x_axis(axes, x, ["Bx_lag", "By_GSE_lag", "Bz_GSE_lag"], df)
 		fig.tight_layout()
@@ -208,7 +178,95 @@ def main(argv: Optional[List[str]] = None) -> int:
 	except Exception as e:
 		print(f"[WARN] Failed to draw daily line plot: {e}", file=sys.stderr)
 
-    # 总体直方图（3子图）
+	# Daily MSE line plots (3 subplots), unified y-axis, with theory/actual ratios
+	try:
+		mse_cols = [("Bx_mse", "Bx MSE"), ("By_GSE_mse", "By (GSE) MSE"), ("Bz_GSE_mse", "Bz (GSE) MSE")]
+		# Check at least one MSE column exists
+		if any(col in df.columns for col, _ in mse_cols):
+			fig, axes = plt.subplots(nrows=3, ncols=1, figsize=(12, 9), sharex=True)
+			x = x_all
+
+			# Fixed MSE y-limits: [0, 100]
+			ymin, ymax = 0.0, 100.0
+
+			for ax, (col, ylabel) in zip(axes, mse_cols):
+				y_mse = pd.to_numeric(df.get(col, pd.Series([])), errors='coerce')
+				mk = None if is_multi else 'o'
+				ms = 0.0 if is_multi else 3.0
+				line_mse, = ax.plot(x, y_mse, marker=mk, markersize=ms, linewidth=1.2, color='k', alpha=1.0, label='MSE')
+				ax.set_ylabel(ylabel, color='k')
+				ax.grid(True, linestyle='--', color='0.5', alpha=0.5)
+				ax.set_ylim(ymin, ymax)
+
+				legend_handles = [line_mse]
+
+				# Overlay theory/actual ratios on right y-axis (if both theory columns present)
+				ax_r = None
+				ratio_handles = []
+				if args.overlay_theory and ('theory_lag_speed' in df.columns) and ('theory_lag_multi' in df.columns):
+					# Map lag column name from MSE column
+					lag_col = col.replace("_mse", "_lag")
+					lag_actual = pd.to_numeric(df.get(lag_col, pd.Series([])), errors='coerce')
+					theory_speed = pd.to_numeric(df.get("theory_lag_speed", pd.Series([])), errors='coerce')
+					theory_multi = pd.to_numeric(df.get("theory_lag_multi", pd.Series([])), errors='coerce')
+
+					# Compute ratios: theory / actual
+					def compute_ratio(tseries: pd.Series, actual: pd.Series) -> np.ndarray:
+						a = actual.to_numpy(dtype=float)
+						b = tseries.to_numpy(dtype=float)
+						r = np.full_like(a, np.nan, dtype=float)
+						mask = np.isfinite(a) & np.isfinite(b) & (np.abs(a) > 1e-12)
+						r[mask] = b[mask] / a[mask]
+						return r
+
+					r_speed = compute_ratio(theory_speed, lag_actual)
+					r_multi = compute_ratio(theory_multi, lag_actual)
+
+					if np.isfinite(r_speed).any() or np.isfinite(r_multi).any():
+						ax_r = ax.twinx()
+						ax_r.tick_params(axis='y', colors='0.2')
+						ax_r.set_ylim(0.3, 5.0)
+
+						if np.isfinite(r_speed).any():
+							line_rs, = ax_r.plot(x, r_speed, linestyle='--', linewidth=0.9, color='0.4',
+												 alpha=1.0, label='Ratio (speed-only)')
+							ratio_handles.append(line_rs)
+						if np.isfinite(r_multi).any():
+							line_rm, = ax_r.plot(x, r_multi, linestyle='-.', linewidth=0.9, color='0.2',
+												 alpha=1.0, label='Ratio (multi-factor)')
+							ratio_handles.append(line_rm)
+
+						# Annotate mean and variance of ratios (bottom-right, main axes coords)
+						text_lines = []
+						if np.isfinite(r_speed).any():
+							r_mean = float(np.nanmean(r_speed))
+							r_var = float(np.nanvar(r_speed))
+							text_lines.append(f"Speed: μ={r_mean:.2f}, σ²={r_var:.2f}")
+						if np.isfinite(r_multi).any():
+							r_mean2 = float(np.nanmean(r_multi))
+							r_var2 = float(np.nanvar(r_multi))
+							text_lines.append(f"Multi: μ={r_mean2:.2f}, σ²={r_var2:.2f}")
+						if text_lines:
+							ax.text(0.98, 0.02, "\n".join(text_lines), transform=ax.transAxes,
+									ha='right', va='bottom', color='k')
+
+				# Legend (top-right, include ratio curves if present)
+				ax.legend(handles=legend_handles + ratio_handles, loc='upper right', frameon=False)
+			axes[-1].set_xlabel("Date (UTC)", color='k')
+			tighten_x_axis(axes, x, [c for c, _ in mse_cols], df)
+			fig.tight_layout()
+			out_mse = args.out_line.with_name("daily_best_lags_mse.png")
+			out_mse.parent.mkdir(parents=True, exist_ok=True)
+			fig.savefig(out_mse, dpi=150)
+			if args.show:
+				plt.show()
+			else:
+				plt.close(fig)
+			print(f"[OK] Saved daily MSE line plot: {out_mse}")
+	except Exception as e:
+		print(f"[WARN] Failed to draw daily MSE line plot: {e}", file=sys.stderr)
+
+	# 总体直方图（3子图）
 	try:
 		fig, axes = plt.subplots(nrows=3, ncols=1, figsize=(10, 9), sharex=False)
 		series = [("Bx_lag", "Bx delay (min)"), ("By_GSE_lag", "By (GSE) delay (min)"), ("Bz_GSE_lag", "Bz (GSE) delay (min)")]
