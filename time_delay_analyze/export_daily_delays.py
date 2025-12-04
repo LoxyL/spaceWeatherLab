@@ -72,6 +72,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     print(f"[INFO] {day_str}: 数据为空，跳过。")
                 empty_row = {
                     "Date": day_str,
+                    "N_ref": np.nan,
                 }
                 if do_mag:
                     empty_row.update({
@@ -85,7 +86,22 @@ def main(argv: Optional[List[str]] = None) -> int:
                 records.append(empty_row)
                 continue
 
-            row = {"Date": day_str}
+            # 参考点数量：不含 NaN 的点数
+            N_ref = np.nan
+            if not omni.empty:
+                if do_mag:
+                    # 至少一个磁场分量非 NaN 视为一个有效参考点
+                    mask_any = np.zeros(len(omni), dtype=bool)
+                    for col_name in ["Bx", "By_GSE", "Bz_GSE"]:
+                        if col_name in omni.columns:
+                            vals = pd.to_numeric(omni[col_name], errors="coerce")
+                            mask_any |= vals.notna().values
+                    N_ref = int(mask_any.sum())
+                elif do_speed and ("Vsw" in omni.columns):
+                    vals = pd.to_numeric(omni["Vsw"], errors="coerce")
+                    N_ref = int(vals.notna().sum())
+
+            row = {"Date": day_str, "N_ref": N_ref}
             if do_mag:
                 # Magnetic field components
                 for omni_col, cda_col in components:

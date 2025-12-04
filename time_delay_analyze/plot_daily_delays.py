@@ -178,91 +178,114 @@ def main(argv: Optional[List[str]] = None) -> int:
 	except Exception as e:
 		print(f"[WARN] Failed to draw daily line plot: {e}", file=sys.stderr)
 
-	# Daily MSE line plots (3 subplots), unified y-axis, with theory/actual ratios
+	# Daily ratio line plots (3 subplots):
+	#   - Left y-axis: theory/actual lag ratios (speed-only & multi-factor), using only days with sufficient N_ref
+	#   - Terminal output: how many days were skipped by N_ref filter and variance before/after filtering
 	try:
-		mse_cols = [("Bx_mse", "Bx MSE"), ("By_GSE_mse", "By (GSE) MSE"), ("Bz_GSE_mse", "Bz (GSE) MSE")]
-		# Check at least one MSE column exists
-		if any(col in df.columns for col, _ in mse_cols):
+		mse_cols = [("Bx_mse", "Bx ratio"), ("By_GSE_mse", "By (GSE) ratio"), ("Bz_GSE_mse", "Bz (GSE) ratio")]
+		has_theory = ("theory_lag_speed" in df.columns) and ("theory_lag_multi" in df.columns)
+		has_count = "N_ref" in df.columns
+		if has_theory and has_count:
 			fig, axes = plt.subplots(nrows=3, ncols=1, figsize=(12, 9), sharex=True)
 			x = x_all
 
-			# Fixed MSE y-limits: [0, 100]
-			ymin, ymax = 0.0, 100.0
-
 			for ax, (col, ylabel) in zip(axes, mse_cols):
-				y_mse = pd.to_numeric(df.get(col, pd.Series([])), errors='coerce')
+				# Map lag column name from MSE column
+				lag_col = col.replace("_mse", "_lag")
+				lag_actual = pd.to_numeric(df.get(lag_col, pd.Series([])), errors='coerce')
+				theory_speed = pd.to_numeric(df.get("theory_lag_speed", pd.Series([])), errors='coerce')
+				theory_multi = pd.to_numeric(df.get("theory_lag_multi", pd.Series([])), errors='coerce')
+				N_ref = pd.to_numeric(df.get("N_ref", pd.Series([])), errors='coerce')
+
+				# Compute raw ratios (before N_ref filtering)
+				def compute_ratio_raw(tseries: pd.Series, actual: pd.Series) -> np.ndarray:
+					a = actual.to_numpy(dtype=float)
+					b = tseries.to_numpy(dtype=float)
+					r = np.full_like(a, np.nan, dtype=float)
+					mask = np.isfinite(a) & np.isfinite(b) & (np.abs(a) > 1e-12)
+					r[mask] = b[mask] / a[mask]
+					return r
+
+				r_speed_raw = compute_ratio_raw(theory_speed, lag_actual)
+				r_multi_raw = compute_ratio_raw(theory_multi, lag_actual)
+
+				# Apply N_ref filter: only trust days with sufficient OMNI reference points
+				valid_ref = N_ref >= 1000
+				r_speed = r_speed_raw.copy()
+				r_multi = r_multi_raw.copy()
+				try:
+					v = valid_ref.to_numpy(dtype=bool)
+					r_speed[~v] = np.nan
+					r_multi[~v] = np.nan
+				except Exception:
+					pass
+
+				# Left axis: ratios (fixed range as configured above)
+				line_handles = []
 				mk = None if is_multi else 'o'
 				ms = 0.0 if is_multi else 3.0
-				line_mse, = ax.plot(x, y_mse, marker=mk, markersize=ms, linewidth=1.2, color='k', alpha=1.0, label='MSE')
+				# if np.isfinite(r_speed).any():
+				# 	line_rs, = ax.plot(x, r_speed, linestyle='--', linewidth=0.9, color='0.4',
+				# 					   alpha=1.0, label='Ratio (speed-only)')
+				# 	line_handles.append(line_rs)
+				if np.isfinite(r_multi).any():
+					line_rm, = ax.plot(x, r_multi, linestyle='-.', linewidth=0.9, color='0.1',
+									   alpha=1.0, label='Ratio (multi-factor)')
+					line_handles.append(line_rm)
+
 				ax.set_ylabel(ylabel, color='k')
 				ax.grid(True, linestyle='--', color='0.5', alpha=0.5)
-				ax.set_ylim(ymin, ymax)
+				ax.set_ylim(0, 3.0)
 
-				legend_handles = [line_mse]
+				# Annotate mean and variance of filtered ratios (bottom-right, main axes coords)
+				text_lines = []
+				if np.isfinite(r_speed).any():
+					r_mean = float(np.nanmean(r_speed))
+					r_var = float(np.nanvar(r_speed))
+					text_lines.append(f"Speed: μ={r_mean:.2f}, σ²={r_var:.2f}")
+				if np.isfinite(r_multi).any():
+					r_mean2 = float(np.nanmean(r_multi))
+					r_var2 = float(np.nanvar(r_multi))
+					text_lines.append(f"Multi: μ={r_mean2:.2f}, σ²={r_var2:.2f}")
+				if text_lines:
+					ax.text(0.98, 0.02, "\n".join(text_lines), transform=ax.transAxes,
+							ha='right', va='bottom', color='k')
 
-				# Overlay theory/actual ratios on right y-axis (if both theory columns present)
-				ax_r = None
-				ratio_handles = []
-				if args.overlay_theory and ('theory_lag_speed' in df.columns) and ('theory_lag_multi' in df.columns):
-					# Map lag column name from MSE column
-					lag_col = col.replace("_mse", "_lag")
-					lag_actual = pd.to_numeric(df.get(lag_col, pd.Series([])), errors='coerce')
-					theory_speed = pd.to_numeric(df.get("theory_lag_speed", pd.Series([])), errors='coerce')
-					theory_multi = pd.to_numeric(df.get("theory_lag_multi", pd.Series([])), errors='coerce')
+				# Terminal output: skipped days and variance before/after filtering
+				try:
+					# Valid days where raw ratios are defined
+					valid_speed_raw = np.isfinite(r_speed_raw)
+					valid_multi_raw = np.isfinite(r_multi_raw)
+					skipped_mask = (~valid_ref.to_numpy(dtype=bool)) & (valid_speed_raw | valid_multi_raw)
+					skipped_days = int(skipped_mask.sum())
 
-					# Compute ratios: theory / actual
-					def compute_ratio(tseries: pd.Series, actual: pd.Series) -> np.ndarray:
-						a = actual.to_numpy(dtype=float)
-						b = tseries.to_numpy(dtype=float)
-						r = np.full_like(a, np.nan, dtype=float)
-						mask = np.isfinite(a) & np.isfinite(b) & (np.abs(a) > 1e-12)
-						r[mask] = b[mask] / a[mask]
-						return r
+					comp_name = col.replace("_mse", "")
+					msg_prefix = f"[INFO] {comp_name}: "
 
-					r_speed = compute_ratio(theory_speed, lag_actual)
-					r_multi = compute_ratio(theory_multi, lag_actual)
+					if np.isfinite(r_speed_raw).any():
+						var_raw = float(np.nanvar(r_speed_raw))
+						var_filt = float(np.nanvar(r_speed))
+						print(f"{msg_prefix}speed-only ratio var raw={var_raw:.4f}, filtered={var_filt:.4f}, skipped_days={skipped_days}")
+					if np.isfinite(r_multi_raw).any():
+						var_raw2 = float(np.nanvar(r_multi_raw))
+						var_filt2 = float(np.nanvar(r_multi))
+						print(f"{msg_prefix}multi-factor ratio var raw={var_raw2:.4f}, filtered={var_filt2:.4f}, skipped_days={skipped_days}")
+				except Exception:
+					pass
 
-					if np.isfinite(r_speed).any() or np.isfinite(r_multi).any():
-						ax_r = ax.twinx()
-						ax_r.tick_params(axis='y', colors='0.2')
-						ax_r.set_ylim(0.3, 5.0)
-
-						if np.isfinite(r_speed).any():
-							line_rs, = ax_r.plot(x, r_speed, linestyle='--', linewidth=0.9, color='0.4',
-												 alpha=1.0, label='Ratio (speed-only)')
-							ratio_handles.append(line_rs)
-						if np.isfinite(r_multi).any():
-							line_rm, = ax_r.plot(x, r_multi, linestyle='-.', linewidth=0.9, color='0.2',
-												 alpha=1.0, label='Ratio (multi-factor)')
-							ratio_handles.append(line_rm)
-
-						# Annotate mean and variance of ratios (bottom-right, main axes coords)
-						text_lines = []
-						if np.isfinite(r_speed).any():
-							r_mean = float(np.nanmean(r_speed))
-							r_var = float(np.nanvar(r_speed))
-							text_lines.append(f"Speed: μ={r_mean:.2f}, σ²={r_var:.2f}")
-						if np.isfinite(r_multi).any():
-							r_mean2 = float(np.nanmean(r_multi))
-							r_var2 = float(np.nanvar(r_multi))
-							text_lines.append(f"Multi: μ={r_mean2:.2f}, σ²={r_var2:.2f}")
-						if text_lines:
-							ax.text(0.98, 0.02, "\n".join(text_lines), transform=ax.transAxes,
-									ha='right', va='bottom', color='k')
-
-				# Legend (top-right, include ratio curves if present)
-				ax.legend(handles=legend_handles + ratio_handles, loc='upper right', frameon=False)
+				# Legend (top-right, only ratio curves)
+				ax.legend(handles=line_handles, loc='upper right', frameon=False)
 			axes[-1].set_xlabel("Date (UTC)", color='k')
 			tighten_x_axis(axes, x, [c for c, _ in mse_cols], df)
 			fig.tight_layout()
-			out_mse = args.out_line.with_name("daily_best_lags_mse.png")
+			out_mse = args.out_line.with_name("daily_best_lags_ratio_count.png")
 			out_mse.parent.mkdir(parents=True, exist_ok=True)
 			fig.savefig(out_mse, dpi=150)
 			if args.show:
 				plt.show()
 			else:
 				plt.close(fig)
-			print(f"[OK] Saved daily MSE line plot: {out_mse}")
+			print(f"[OK] Saved daily ratio/count line plot: {out_mse}")
 	except Exception as e:
 		print(f"[WARN] Failed to draw daily MSE line plot: {e}", file=sys.stderr)
 
@@ -297,6 +320,40 @@ def main(argv: Optional[List[str]] = None) -> int:
 		print(f"[OK] Saved overall lag histogram: {args.out_hist}")
 	except Exception as e:
 		print(f"[WARN] Failed to draw histogram: {e}", file=sys.stderr)
+
+	# New figure: daily theoretical lag vs solar wind speed
+	try:
+		if ("theory_lag_multi" in df.columns) and ("Vsw_mean" in df.columns):
+			t_theory = pd.to_numeric(df.get("theory_lag_multi", pd.Series([])), errors='coerce')
+			v_mean = pd.to_numeric(df.get("Vsw_mean", pd.Series([])), errors='coerce')
+
+			fig, ax1 = plt.subplots(figsize=(12, 4))
+			line_t, = ax1.plot(x_all, t_theory, color='k', linestyle='-', linewidth=1.2, label='Theoretical lag (multi-factor)')
+			ax1.set_ylabel("Lag (min)", color='k')
+			ax1.grid(True, linestyle='--', color='0.5', alpha=0.5)
+
+			ax2 = ax1.twinx()
+			line_v, = ax2.plot(x_all, v_mean, color='0.4', linestyle='--', linewidth=1.0, label='Vsw mean')
+			ax2.set_ylabel("Vsw mean (km/s)", color='0.4')
+
+			ax1.set_xlabel("Date (UTC)", color='k')
+			# Reuse tighten_x_axis on a single-axes list
+			tighten_x_axis([ax1], x_all, ["theory_lag_multi"], df.assign(theory_lag_multi=t_theory))
+
+			# Combined legend (top-right)
+			fig.legend(handles=[line_t, line_v], loc='upper right', frameon=False)
+
+			fig.tight_layout()
+			out_theory = args.out_line.with_name("daily_theory_and_speed.png")
+			out_theory.parent.mkdir(parents=True, exist_ok=True)
+			fig.savefig(out_theory, dpi=150)
+			if args.show:
+				plt.show()
+			else:
+				plt.close(fig)
+			print(f"[OK] Saved daily theoretical lag & speed plot: {out_theory}")
+	except Exception as e:
+		print(f"[WARN] Failed to draw daily theoretical lag & speed plot: {e}", file=sys.stderr)
 
 	# 多年情况下：按年统计均值与方差并绘制（同一张图每列两条线）
 	try:
