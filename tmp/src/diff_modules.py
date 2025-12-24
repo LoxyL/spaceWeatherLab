@@ -25,34 +25,83 @@ class FMDiffuser:
         v_gt = n - x0
         return (1 - t_) * x0 + t_ * n, v_gt
     
-    def calc_loss(self, v_pred, v_gt, t=None):
-        return (v_pred - v_gt).pow(2).mean()
+    def calc_loss(self, v_pred, v_gt, mask, t=None, per_token=False):
+        if per_token:
+            temp = postprocess((v_pred - v_gt).pow(2))[:,:,3:7]
+            mask = postprocess(mask)[:,:,3:7].bool()
+            b, s, d = temp.shape
+            temp = temp.contiguous().view(b,per_token,s//per_token,d)
+            temp_mask = mask.contiguous().view(b,per_token,s//per_token,d)
+            temp[temp_mask] = 0
+            count = (~temp_mask).sum(dim=(0,1,3), keepdim=False)
+            temp = temp.sum(dim=(0,1,3), keepdim=False) / count
+            return temp.view(-1,4).mean(dim=-1)
+        return (v_pred - v_gt)[~mask].pow(2).mean()
+
+@torch.no_grad()
+def postprocess(x):
+    B, S_new, N_new = x.shape
+    N = N_new // 4
+    S = S_new * 4
     
-    
+    x_reshaped = x.reshape(B, S_new, N, 4)
+    x_original = x_reshaped.permute(0, 1, 3, 2).reshape(B, S, N)
+    return x_original.contiguous()
+
 
 class EulerSolver:
     """SD3 used Euler solver"""
     def __init__(self, num_steps):
         super().__init__()
         self.num_steps = num_steps
-        self.t = torch.linspace(0, 1, num_steps)
+    #     self.t = torch.linspace(0, 1, num_steps)
 
-    def get_t(self, i):
-        # i: step index
-        return self.t[i]
+    # def get_t(self, i):
+    #     # i: step index
+    #     return self.t[i]
     
     @torch.no_grad()
     def step(self, xt, v, dt: float):
-          return xt + v * dt  # dt < 0
+        return xt + v * dt  # dt < 0
     
     @torch.no_grad()
-    def generate(self, model, cond, shape,):
-        b, d = shape
+    def generate(self, model, cond, shape, mask, step=None):
+        b = shape[:-1]
         xt = torch.randn(shape).to(model.device)
+        step = step if step is not None else self.num_steps
 
-        for i in reversed(range(1, self.num_steps)):
-            t = torch.full((b,), self.t[i], device=model.device)
+        self.T = torch.linspace(0, 1, step+1)
+        for i in reversed(range(1, step+1)):
+            t = torch.full(b, self.T[i], device=model.device)
             v_pred = model.pred_v(xt, t, cond)
-            dt = self.t[i-1] - self.t[i]
+            dt = self.T[i-1] - self.T[i]
+            xt = self.step(xt, v_pred, dt)
+            xt[mask] = torch.randn_like(xt[mask]) * self.T[i-1]
+        return xt  # [b, d]
+    
+    @torch.no_grad()
+    def generate_test(self, x0, shape, step=None):
+        xt = torch.randn_like(x0)
+        step = step if step is not None else self.num_steps
+
+        self.T = torch.linspace(0, 1, step+1)
+        bias=torch.randn_like(x0)
+        for i in reversed(range(1, step+1)):
+            t = torch.full(shape, self.T[i])
+            v_pred = (xt - x0 + bias*(0.07**0.5*t))/t
+            dt = self.T[i-1] - self.T[i]
             xt = self.step(xt, v_pred, dt)
         return xt  # [b, d]
+    
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+    solver=EulerSolver(64)
+    x0=torch.randn(256,256,10)
+    steps=[1,2,4,8,16,32,64]
+    ls=[]
+    for step in steps:
+        xt=solver.generate_test(x0,x0.shape,step=step)
+        loss=((xt - x0)**2).mean().item()
+        ls.append(loss)
+    plt.plot(steps,ls)
+    plt.show()

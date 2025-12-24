@@ -1,11 +1,15 @@
 ldm/*
 mar/*
 README.md
-temp.ipynb
-wt.py
 data/*
+outcome/*
 test/*
-m copy.ipynb
+temp.ipynb
+stat_test.py
+m.ipynb
+shape_test.py
+wt.py
+
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -223,3 +227,4 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+

@@ -2,3 +2,6 @@ __pycache__/
 data/
 *_data/
 
+tmp/src/temp.ipynb
+tmp/src/stat_test.py
+tmp/src/m.ipynb

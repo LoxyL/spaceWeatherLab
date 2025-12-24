@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 from torch import nn
 from transformer_modules import TransformerDecoder
 from mlp_modules import SimpleMLPAdaLN
@@ -19,6 +20,8 @@ class ARModel(nn.Module):
         super().__init__()
         self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.train_config = train_config
+        self.mlp_pred = train_config.get('mlp_pred',"v")
+        self.seg_size = train_config.get('seg_size', 1)
         self.num_fm_per_gd = train_config['num_fm_per_gd']
         self.max_seq_len = train_config['max_seq_len']
         self.build_modules(transformer_config, mlp_config, diffusion_config)
@@ -29,13 +32,15 @@ class ARModel(nn.Module):
         self.diffuser = FMDiffuser(**diffusion_config)
         self.solver = EulerSolver(**diffusion_config)
     
-    def calc_loss(self, v_pred, v_gt):
-        return self.diffuser.calc_loss(v_pred, v_gt)
+    def calc_loss(self, v_pred, v_gt, mask=None, per_token=False):
+        return self.diffuser.calc_loss(v_pred, v_gt, mask, per_token=per_token)
     
-    def train_step(self, x0:torch.Tensor): # x0 seq = s + 1 TODO: add SOS
+    def train_step(self, mask:torch.Tensor, x0:torch.Tensor, per_token_loss=False): # x0 seq = s + 1 TODO: add SOS
         b,s_,d=x0.shape
         s=s_-1
-        cond:torch.Tensor = self.get_cond(x0[:,:-1])  # [b, s, c]
+        mask_f32 = mask.clone().to(torch.float32)
+        x0_m = torch.cat([x0,mask_f32],dim=-1)
+        cond:torch.Tensor = self.get_cond(x0_m[:,:-1])  # [b, s, c]
 
         # loss = 0
         # for _  in range(self.num_fm_per_gd):
@@ -50,7 +55,7 @@ class ARModel(nn.Module):
         x0_rep = x0[:,1:].repeat(1,self.num_fm_per_gd,1)
         x, v_gt = self.diffuser.add_noise(x0_rep, t)
         v_pred = self.pred_v(x, t, cond) # [b, s*n, d]
-        loss = self.calc_loss(v_pred, v_gt)
+        loss = self.calc_loss(v_pred, v_gt, mask[:,1:].repeat(1,self.num_fm_per_gd,1),per_token=self.num_fm_per_gd if per_token_loss else False)
         return loss
     
     def get_cond(self, x):
@@ -62,32 +67,97 @@ class ARModel(nn.Module):
         t_ = t.view(-1).contiguous()
         cond_ = cond.view([-1,cond.shape[-1]]).contiguous()
         
-        v_pred = self.mlp(x_, t_, cond_).contiguous()
+        v_pred = self.mlp(x_, t_, cond_).contiguous() 
+        if self.mlp_pred == "x":
+            # in this case the above v_pred is actually x0 pred
+            v_pred = (x_ - v_pred) / t_.clamp_min(1e-4).unsqueeze(-1)
 
         return v_pred.view(x.shape).contiguous()
     
     @torch.no_grad()
-    def gen(self, x: torch.Tensor, scope: int):
+    def gen(self, mask:torch.Tensor, x: torch.Tensor, scope: int=None, step=None):
         """Autoregressive generative prediction of the future scope tokens
         based on history data (x).
         - No KV cache currently.
         """
-        b, s_h, d=x.shape
-        for i in range(scope):
-            x_temp = x[:,-self.max_seq_len:]
-            cond = self.get_cond(x_temp)[:, -1, :]
-            ntp = self.solver.generate(self, cond, (b,d)) # [b,d]
-            ntp = ntp.view([b,1,d]).contiguous()
-            x = torch.cat((x,ntp), dim=1)
-        return x
+        if isinstance(scope, int):
+            assert not hasattr(step,"__iter__"), f"{step}"
+            mask_f32 = mask.clone().to(torch.float32)
+            x_m = torch.cat([x,mask_f32],dim=-1)
+            b, s_h, d=x.shape
+            for i in range(scope):
+                x_temp = x_m[:,-self.max_seq_len:]
+                cond = self.get_cond(x_temp)[:, -1, :]
+                ntp = self.solver.generate(self, cond, (b,d), step=step) # [b,d]
+                ntp = ntp.view([b,1,d]).contiguous()
+                ntp = torch.cat((ntp,torch.zeros_like(ntp)), dim=-1) # [b,1,d*2]
+                x_m = torch.cat((x_m,ntp), dim=1)
+            return x_m[:,:,:d]
+        elif scope is None and hasattr(step,"__iter__"):
+            mask_f32 = mask[:,:-1].clone().to(torch.float32)
+            x_m = torch.cat([x[:,:-1],mask_f32],dim=-1)
+            b, s_h, d=x.shape
+            s=s_h-1
+            ls=[]
+            tar,tar_mask=x[:,1:], mask[:,1:]
+            tar_mask_ = self.postprocess(tar_mask)[:,:,:].bool() # [b,s*4,4]
+            count=(~tar_mask_).sum(dim=(0,2),keepdim=False)
+            cond = self.get_cond(x_m).contiguous() #[b,s,c]
+            for diff_step in step:              
+                ntp = self.solver.generate(self, cond, (b,s,d), mask=mask[:,1:], step=diff_step) # [b,s,d]
+                temp = (ntp-tar).pow(2)
+                temp = self.postprocess(temp)[:,:,:]
+                temp[tar_mask_]=0
+                loss = temp.sum(dim=(0,2),keepdim=False)/count # [s*4,]
+                ls.append(loss.view(-1,4).mean(dim=-1).cpu().numpy())
+            return np.array(ls)
+        elif scope == "debug" and hasattr(step,"__iter__"):
+            mask_f32 = mask[:,:-1].clone().to(torch.float32)
+            x_m = torch.cat([x[:,:-1],mask_f32],dim=-1)
+            b, s_h, d=x.shape
+            s=s_h-1
+            ls=[]
+            tar,tar_mask=x[:,1:], mask[:,1:]
+            tar_mask_ = self.postprocess(tar_mask)[:,:,:].bool()
+            cond = self.get_cond(x_m).contiguous() #[b,s,c]
+            for diff_step in step:              
+                ntp = self.solver.generate(self, cond, (b,s,d),mask=mask[:,1:],step=diff_step) # [b,s,d]
+                temp = (ntp-tar).pow(2)
+                temp = self.postprocess(temp)[:,:,:]
+                ls.append(temp[tar_mask_].mean().cpu().numpy())
+            return np.array(ls)
     
     @torch.no_grad()
-    def preprocess(self, x):
-        return x # TODO
+    def preprocess(self, mask, x):
+        B, S, N = x.shape
+        assert S % self.seg_size == 0, "S must be divisible by s"
+
+        x_reshaped = x.reshape(B, S//self.seg_size, self.seg_size, N)
+        x_transformed = x_reshaped.permute(0, 1, 3, 2).reshape(B, S//self.seg_size, N*self.seg_size)
+
+        mask_reshaped = mask.reshape(B, S//self.seg_size, self.seg_size, N)
+        mask_transformed = mask_reshaped.permute(0, 1, 3, 2).reshape(B, S//self.seg_size, N*self.seg_size)
+        return mask_transformed.contiguous() , x_transformed.contiguous()
     
     @torch.no_grad()
-    def decode(self, x):
-        return x # TODO
+    def postprocess(self, x):
+        B, S_new, N_new = x.shape
+        N = N_new // self.seg_size
+        S = S_new * self.seg_size
+        
+        x_reshaped = x.reshape(B, S_new, N, self.seg_size)
+        x_original = x_reshaped.permute(0, 1, 3, 2).reshape(B, S, N)
+        return x_original.contiguous()
+    
+    @torch.no_grad()
+    def postprocess_2d(self, x):
+        S_new, N_new = x.shape
+        N = N_new // self.seg_size
+        S = S_new * self.seg_size
+        x_reshaped = x.reshape(S_new, N, self.seg_size)
+        x_original = x_reshaped.permute(0, 2, 1).reshape(S, N)
+        return x_original.contiguous()
+
 
 
 
