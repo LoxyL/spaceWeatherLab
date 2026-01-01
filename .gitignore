@@ -4,3 +4,7 @@ data/
 tmp*
 *.csv
 *.png
+
+tmp/src/temp.ipynb
+tmp/src/stat_test.py
+tmp/src/m.ipynb
