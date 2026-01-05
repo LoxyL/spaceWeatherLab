@@ -3,7 +3,7 @@ import torch
 import numpy as np
 from utils import Logger, check_ae
 from data_seq import postprocess_data
-from probe import pipeline
+from probe import pipeline,pipeline2
 
 def train(model,
           optim,
@@ -15,6 +15,9 @@ def train(model,
           logger: Logger):
     if train_config['train_steps']<=0:
         model.eval()
+        if train_config['train_steps']==-42:
+            pipeline2(model, logger, val_dataset.randomized_loader)
+            return
         # test(model, logger, train_dataset, num_test_steps=50,is_eval=True)
         # test(model, logger, val_dataset, num_test_steps=50,is_eval=True)
         #test(model, logger, test_dataset, num_test_steps=200)
@@ -42,7 +45,7 @@ def train(model,
             lr_scheduler.step()
         if logger.step % train_config['eval_every_n_steps'] == 0:
             model.eval()
-            val_loss=test(model, logger, val_dataset, num_test_steps=1000, is_eval=True)
+            val_loss=test(model, logger, val_dataset.randomized_loader, num_test_steps=32, is_eval=True)
             if val_loss < current_best_val_loss:
                 current_best_val_loss = val_loss
                 if train_config['save']:
@@ -58,9 +61,9 @@ def train(model,
                 model.load_state_dict(sd, strict=True)
             model.eval()
             test(model, logger, test_dataset, num_test_steps=1000)
-            #test_gen(model,test_dataset,logger,num=10)
             pipeline(model, logger, val_dataset.randomized_loader)
             logger.train_end()
+            test_gen(model,test_dataset,logger,num=10)
             break
     
     # if train_config['save']:
@@ -83,7 +86,7 @@ def test_gen(model, test_dataset, logger, num=10):
     x0s_= x0s_.to(model.device)
     mask_=mask_.to(model.device)
     print("generating")
-    steps=[2,8,32]
+    steps=[32,]
     for step in steps:
         out=[]
         for _ in range(num):

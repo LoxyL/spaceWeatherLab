@@ -4,11 +4,8 @@ README.md
 data/*
 outcome/*
 test/*
-temp.ipynb
-stat_test.py
-m.ipynb
-shape_test.py
 wt.py
+
 
 
 # Byte-compiled / optimized / DLL files

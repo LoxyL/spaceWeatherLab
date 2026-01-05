@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import os
+import time
 import matplotlib.pyplot as plt
 from probe_debug import *
 from similarity import *
@@ -9,14 +10,37 @@ from utils import estimate_mean_and_uncertainty
 @torch.no_grad()
 def pipeline(model, logger, dataset):
     model.eval()
-    
-    #loss_against_sequence_length(model, dataset, logger, num_test_steps=100)
-    # for i in range(2):
-    #     torch.cuda.reset_peak_memory_stats()
-    #     diff_loss(model, dataset, logger, num_test_steps=[100,50,50][i],metric_idx=i)
-    #     peak_memory=torch.cuda.max_memory_allocated() / (1024 ** 3)
-    #     print(f"{i} Peak memory usage during probing: {peak_memory:.2f} GB")
+    t0= time.time()
+    torch.cuda.reset_peak_memory_stats()
+    loss_against_sequence_length(model, dataset, logger, num_test_steps=200)
+    for i in range(2):
+        diff_loss(model, dataset, logger, num_test_steps=[10,10,10][i],metric_idx=i)
     loss_vs_time(model, dataset, logger, num_test_steps=40)
+    peak_memory=torch.cuda.max_memory_allocated() / (1024 ** 3)
+    info=f"Peak memory usage during probing: {peak_memory:.2f} GB"
+    logger.log_text(info,"train_log")
+    print(info)
+    dt= time.time()-t0
+    info=f"Probing time: {dt/60:.1f} min"
+    logger.log_text(info,"train_log")
+    print(info)
+    #pit(model,dataset,logger,50)
+
+@torch.no_grad()
+def pipeline2(model, logger, dataset):
+    model.eval()
+    t0= time.time()
+    torch.cuda.reset_peak_memory_stats()
+    loss_against_sequence_length(model, dataset, logger, num_test_steps=200)
+    
+    peak_memory=torch.cuda.max_memory_allocated() / (1024 ** 3)
+    info=f"Peak memory usage during probing: {peak_memory:.2f} GB"
+    logger.log_text(info,"train_log")
+    print(info)
+    dt= time.time()-t0
+    info=f"Probing time: {dt/60:.1f} min"
+    logger.log_text(info,"train_log")
+    print(info)
     #pit(model,dataset,logger,50)
 
     
@@ -32,8 +56,8 @@ def loss_against_sequence_length(model, dataset, logger, num_test_steps=100):
         mask, x0 = model.preprocess(mask,x0)
         mask = mask.to(model.device)
         x0 = x0.to(model.device)
-        loss = model.train_step(mask, x0, per_token_loss=True) # [s,]
-        acc_loss.append(loss.cpu().numpy())
+        loss_ind,loss_sw = model.train_step(mask, x0, per_token_loss=True) # [s,]
+        acc_loss.append([loss_ind.cpu().numpy(),loss_sw.cpu().numpy()])
         if step >= num_test_steps:
             break
     acc_loss=np.asarray(acc_loss)
@@ -43,12 +67,13 @@ def loss_against_sequence_length(model, dataset, logger, num_test_steps=100):
     # visualize & save at logger.log_root
     plt.figure(figsize=(10, 6))
     
-    plt.errorbar(np.arange(len(mean_loss)), mean_loss, yerr=std_loss, fmt='-o', ecolor='#00BFFF80', capsize=5)
+    plt.errorbar(np.arange(len(mean_loss[0])), mean_loss[0], yerr=std_loss[0], fmt='-o', ecolor='#00BFFF80', capsize=5)
+    plt.errorbar(np.arange(len(mean_loss[1])), mean_loss[1], yerr=std_loss[1], fmt='-o', ecolor="#FB00FF80", capsize=5)
     # also plot a smoothed version
     window_size = 15
-    if len(mean_loss) >= window_size:
+    if len(mean_loss[0]) >= window_size:
         # pad the sequence to avoid losing points at the edges
-        padded_mean = np.pad(mean_loss, (window_size//2, window_size//2), mode='edge')
+        padded_mean = np.pad(mean_loss[0], (window_size//2, window_size//2), mode='edge')
         smoothed_mean = np.convolve(padded_mean, np.ones(window_size)/window_size, mode='valid')
         plt.plot(np.arange(len(smoothed_mean)), smoothed_mean, color="#F80067", label='Smoothed', linewidth=2)
     plt.xlabel('Sequence Length')
@@ -62,6 +87,7 @@ def loss_against_sequence_length(model, dataset, logger, num_test_steps=100):
                 dpi=300, 
                 bbox_inches='tight')
     plt.close()
+
 
 def generate_Q_func(z, model, shape, Q_mask, step, **kwargs):
     b,s,d = shape
@@ -170,7 +196,7 @@ def diff_loss(model, dataset, logger, num_test_steps=50, metric_idx=0):
 
 def loss_vs_time(model, dataset, logger, num_test_steps=250):
     print("Evaluating loss vs diffusion time t...")
-    ts=torch.linspace(0.01,0.99,10)
+    ts=torch.linspace(0.05,0.99,10)
     acc_loss = []
     acc_loss_x0=[]
     step = 0
